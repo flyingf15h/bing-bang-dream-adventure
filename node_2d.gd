@@ -247,6 +247,23 @@ func _grade() -> Array:
 	return [key, ramp[0], pct, ramp[1]]
 
 
+const RESULT_ART_FAIL: Texture2D = preload("res://assets/game_loss.png")
+const RESULT_ART_PASS: Texture2D = preload("res://assets/start_bg.png")
+const RESULT_ART_SUCCESS: Texture2D = preload("res://assets/game_win.png")
+
+const GRADE_CATEGORY := {
+	"FAIL": "FAIL",
+	"D": "PASS", "C": "PASS", "B": "PASS", "A": "PASS",
+	"S": "SUCCESS", "SS": "SUCCESS", "SS+": "SUCCESS",
+}
+
+func _result_art(grade_key: String) -> Texture2D:
+	match GRADE_CATEGORY.get(grade_key, "FAIL"):
+		"SUCCESS": return RESULT_ART_SUCCESS
+		"PASS": return RESULT_ART_PASS
+		_: return RESULT_ART_FAIL
+
+
 func _fmt_score(v: int) -> String:
 	var width: int = maxi(str(max_score).length(), 2)
 	var d: String = str(maxi(v, 0)).pad_zeros(width)
@@ -1084,6 +1101,17 @@ func _draw_ghost_number(pos: Vector2, txt: String, sz: int, accent: Color,
 	draw_string(font_heavy, pos, txt, 0, -1, sz, Color(1, 1, 1, 0.95 * a))
 
 
+func _draw_result_backdrop(vp: Vector2, a: float) -> void:
+	var art: Texture2D = _result_art(String(_grade()[0]))
+	var tex_size: Vector2 = art.get_size()
+	if tex_size.x <= 0.0 or tex_size.y <= 0.0:
+		return
+	var scale: float = maxf(vp.x / tex_size.x, vp.y / tex_size.y)
+	var draw_size: Vector2 = tex_size * scale
+	var pos: Vector2 = (vp - draw_size) * 0.5
+	draw_texture_rect(art, Rect2(pos, draw_size), false, Color(1, 1, 1, a))
+
+
 func _draw_results(vp: Vector2) -> void:
 	var t: float = 1.0 if finish_ui < 0.0 else ui_time - finish_ui
 	var a: float = smoothstep(0.30, 1.00, t)
@@ -1095,7 +1123,8 @@ func _draw_results(vp: Vector2) -> void:
 	var function_stagger := func(i: float) -> float:
 		return smoothstep(0.30 + i * 0.07, 0.95 + i * 0.07, t)
 
-	draw_rect(Rect2(Vector2.ZERO, vp), Color(0.035, 0.030, 0.060, 0.97 * a))
+	_draw_result_backdrop(vp, a)
+	draw_rect(Rect2(Vector2.ZERO, vp), Color(0.035, 0.030, 0.060, 0.55 * a))
 	for i in 14:
 		var f: float = float(i) / 14.0
 		draw_circle(Vector2(cx, vp.y * 0.42), vp.x * (0.20 + 0.42 * f),
