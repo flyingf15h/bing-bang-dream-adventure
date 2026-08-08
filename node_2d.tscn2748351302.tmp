@@ -1,0 +1,14 @@
+[gd_scene format=3 uid="uid://bw771jpyvlxym"]
+
+[ext_resource type="Script" uid="uid://cwvq7kjqx1dsc" path="res://node_2d.gd" id="1_wtcfe"]
+
+[node name="Node2D" type="Node2D" unique_id=862705482]
+script = ExtResource("1_wtcfe")
+beatmap_path = null
+audio_path = null
+radius = null
+start_delay = null
+bar_len_centre = null
+bar_len_edge = null
+bar_thickness = null
+hold_degrees_per_second = null
