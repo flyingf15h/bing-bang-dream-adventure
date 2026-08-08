@@ -1,5 +1,7 @@
 extends Node2D
 
+const TapEvent = preload("res://TapInputBus.gd").TapEvent
+
 @export var beatmap_path: String = "res://badapple_hex.json"
 @export var audio_path:   String = "res://Bad-Apple-Cut-Audio.ogg"
 @export var video_path:   String = "res://Bad-Apple-Cut-Video.ogv"
@@ -124,6 +126,7 @@ func _ready() -> void:
 	song_time = -start_delay
 	set_process(true)
 	get_viewport().size_changed.connect(_on_resize)
+	TapInputBus.tap.connect(_on_tap)
 
 
 func _on_resize() -> void:
@@ -442,6 +445,20 @@ func _try_hit(sector: int) -> void:
 		_finish(best, verdict)
 
 
+func _on_tap(event: TapEvent) -> void:
+	# Mouse/touch/IMU all funnel through TapInputBus and land here, reusing
+	# the exact same _try_hit() scoring path as the A/S/D/J/K/L keys.
+	if autoplay or paused or not started or finished:
+		return
+	var offset: Vector2 = event.screen_position - centre
+	if offset.length() < 12.0:
+		return # too close to centre to read a direction
+	var angle_deg: float = rad_to_deg(atan2(-offset.y, offset.x))
+	if angle_deg < 0.0:
+		angle_deg += 360.0
+	_try_hit(_nearest_sector(angle_deg))
+
+
 func _finish(n: Dictionary, verdict: String) -> void:
 	n["state"] = "done"
 	n["judged"] = verdict
@@ -485,7 +502,13 @@ func _unhandled_input(event: InputEvent) -> void:
 			and event.button_index == MOUSE_BUTTON_LEFT:
 		if pause_rect.has_point(event.position):
 			_toggle_pause()
-			return
+		else:
+			TapInputBus.report_tap("mouse", event.position)
+		return
+
+	if event is InputEventScreenTouch and event.pressed:
+		TapInputBus.report_tap("touch", event.position)
+		return
 
 	if not (event is InputEventKey and event.pressed):
 		return
@@ -493,6 +516,9 @@ func _unhandled_input(event: InputEvent) -> void:
 
 	if not event.echo:
 		match k:
+			KEY_ESCAPE:
+				get_tree().change_scene_to_file("res://Start.tscn")
+				return
 			KEY_SPACE:
 				_toggle_pause()
 				return
@@ -946,7 +972,7 @@ func _draw_hud(vp: Vector2) -> void:
 		draw_string(font_bold, Vector2(vp.x - 28 - lw, cpos.y + 20), "COMBO", 0, -1, 15,
 			Color(ccol.r, ccol.g, ccol.b, 0.75))
 
-	var hint := "A S D / J K L    SPACE pause   R restart   F autoplay   , . speed %.1fx   [ ] ; ' latency %+.0fms" % [speed_mult, audio_offset_ms]
+	var hint := "A S D / J K L    SPACE pause   R restart   F autoplay   ESC title   , . speed %.1fx   [ ] ; ' latency %+.0fms" % [speed_mult, audio_offset_ms]
 	draw_string(font_bold, Vector2(24, vp.y - 16), hint, 0, -1, 14, Color(1, 1, 1, 0.40))
 
 	if autoplay:
@@ -1177,4 +1203,4 @@ func _draw_results(vp: Vector2) -> void:
 	var f_txt := "press  R  to replay"
 	_draw_ink(font_bold,
 		Vector2(cx - _text_w(font_bold, f_txt, 14) * 0.5, vp.y - 30.0),
-		f_txt, 14, Color(RES_INK_DIM.r, RES_INK_DIM.g, RES_INK_DIM.b, 0.75 * a))
+		f_txt, 14, Color(RES_INK_DIM.r, RES_INK_DIM.g, RES_INK_DIM.b, 0.75 * a))	

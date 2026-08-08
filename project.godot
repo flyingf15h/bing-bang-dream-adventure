@@ -11,8 +11,13 @@ config_version=5
 [application]
 
 config/name="bing bing rhythm war"
+run/main_scene="res://Start.tscn"
 config/features=PackedStringArray("4.7", "Forward Plus")
 config/icon="res://icon.svg"
+
+[autoload]
+
+TapInputBus="*res://TapInputBus.gd"
 
 [display]
 
