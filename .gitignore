@@ -1,0 +1,15 @@
+.godot/
+/android/
+
+*.tmp
+
+*.m4a
+*.mp4
+
+/build/
+*.exe
+*.pck
+*.zip
+
+.DS_Store
+Thumbs.db
