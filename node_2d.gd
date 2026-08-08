@@ -95,6 +95,11 @@ var font_heavy: FontVariation
 
 
 func _ready() -> void:
+	# ── FIX: enable 2D multisample antialiasing so draw_arc / draw_line /
+	#    draw_colored_polygon look as smooth as text.  Without this, all the
+	#    circle and note geometry is rendered without AA and looks pixelated.
+	get_viewport().msaa_2d = Viewport.MSAA_4X
+
 	centre = get_viewport_rect().size * 0.5
 	for s in SECTOR_KEYS:
 		key_sector[SECTOR_KEYS[s]] = int(s)
@@ -651,7 +656,9 @@ func _vec(angle_deg: float) -> Vector2:
 
 
 func _arc_poly(r: float, a_c: float, half_deg: float, thick: float) -> PackedVector2Array:
-	var steps: int = clampi(int(half_deg * 1.6), 4, 40)
+	# ── FIX: increased segment density (was half_deg * 1.6, min 4, max 40)
+	#    so arcs are smoother and don't look faceted / pixelated.
+	var steps: int = clampi(int(half_deg * 3.0), 8, 64)
 	var outer := PackedVector2Array()
 	var inner := PackedVector2Array()
 	# Keep both edges on the near side of the centre, and refuse the band
@@ -690,7 +697,9 @@ func _fill_arc(r: float, a_c: float, half_deg: float, thick: float,
 
 
 func _arc_line(r: float, a_c: float, half_deg: float) -> PackedVector2Array:
-	var steps: int = clampi(int(half_deg * 1.6), 4, 40)
+	# ── FIX: increased segment density (was half_deg * 1.6, min 4, max 40)
+	#    so arc outlines are smoother.
+	var steps: int = clampi(int(half_deg * 3.0), 8, 64)
 	var pts := PackedVector2Array()
 	for i in steps + 1:
 		var a: float = lerpf(a_c - half_deg, a_c + half_deg, float(i) / steps)
@@ -1315,4 +1324,4 @@ func _draw_results(vp: Vector2) -> void:
 		f_txt = "flick  UP  to replay      flick  DOWN  to quit      or press  R"
 	_draw_ink(font_bold,
 		Vector2(cx - _text_w(font_bold, f_txt, 14) * 0.5, vp.y - 30.0),
-		f_txt, 14, Color(RES_INK_DIM.r, RES_INK_DIM.g, RES_INK_DIM.b, 0.75 * a))	
+		f_txt, 14, Color(RES_INK_DIM.r, RES_INK_DIM.g, RES_INK_DIM.b, 0.75 * a))
