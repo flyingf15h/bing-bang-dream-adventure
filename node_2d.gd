@@ -1,6 +1,5 @@
 extends Node2D
 
-
 @export var beatmap_path: String = "res://badapple_hex.json"
 @export var audio_path:   String = "res://Bad-Apple-Cut-Audio.ogg"
 @export var video_path:   String = "res://Bad-Apple-Cut-Video.ogv"
