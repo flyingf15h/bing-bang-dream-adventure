@@ -1,0 +1,15 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Arduino build artifacts
+build/
+*.elf
+*.bin.map
+
+# Saved calibrations
+*_calibration.json
+
+# Stray toolchain binary that landed in the sketch folder
+arduino-cli.exe
