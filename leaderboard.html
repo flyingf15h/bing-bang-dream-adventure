@@ -3,26 +3,12 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>BING BANG DREAM ADVENTURE — Leaderboard</title>
+<title>Leaderboard</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Titan+One&family=Mochiy+Pop+One&family=M+PLUS+Rounded+1c:wght@400;500;700;800;900&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=M+PLUS+Rounded+1c:wght@400;500;700;800;900&display=swap" rel="stylesheet">
 <style>
-  /* Put whichever wordmark font you have in a fonts/ folder next to this file.
-     The browser walks this list and uses the first one that loads, so any
-     single file is enough; Titan One is the fallback if none are present. */
-  @font-face{
-    font-family:'Wordmark';
-    src:url('fonts/subadaiboldital.ttf') format('truetype'),
-        url('fonts/subadaibold.ttf') format('truetype'),
-        url('fonts/subadaiital.ttf') format('truetype'),
-        url('fonts/subadai.ttf') format('truetype');
-    font-weight:400;font-display:swap;
-  }
   :root{
-    /* subadaiboldital is already slanted, so no extra CSS skew. Set to about
-       -12deg if you swap to an upright face or fall back to Titan One. */
-    --title-slant:0deg;
     /* pulled from the title screen: pale blue on the left, lavender on the right */
     --sky:#c9dcf5;
     --lilac:#d5cbee;
@@ -54,62 +40,36 @@
   .wrap{position:relative;z-index:2;max-width:820px;margin:0 auto;padding:38px 20px 80px}
 
   /* ---------------- header ---------------- */
-  header{position:relative;text-align:left;margin-bottom:34px;padding-right:170px}
+  header{
+    display:flex;flex-direction:column;align-items:center;gap:16px;
+    text-align:center;margin-bottom:36px;
+  }
 
-  /* Two stacked copies: white keyline underneath, gradient fill on top.
-     background-clip:text and -webkit-text-stroke fight each other on a single
-     element, so the outline has to be its own layer. */
-  h1{
-    position:relative;display:inline-block;
-    font-family:'Wordmark','Titan One','M PLUS Rounded 1c',sans-serif;
-    font-weight:400;font-size:clamp(54px,11.5vw,108px);
-    letter-spacing:.012em;line-height:1.0;
-    text-transform:uppercase;
-    transform:skewX(var(--title-slant));
-    filter:drop-shadow(0 0 15px rgba(255,255,255,.95))
-           drop-shadow(0 4px 0 rgba(139,111,214,.22))
+  .wordmark{
+    display:block;height:clamp(52px,11vw,100px);width:auto;
+    filter:drop-shadow(0 4px 0 rgba(139,111,214,.22))
            drop-shadow(0 10px 16px rgba(80,100,180,.22));
   }
-  h1::before{
-    content:attr(data-text);
-    position:absolute;left:0;top:0;
-    -webkit-text-stroke:4px #fff;
-    color:#fff;
-    z-index:0;
-  }
-  h1 span{
-    position:relative;z-index:1;
-    background:linear-gradient(96deg,
-      #a06ee0 0%, #8a76e4 22%, #6f86e8 46%, #5b95ea 70%, #4fa6ec 100%);
-    -webkit-background-clip:text;background-clip:text;
-    color:transparent;
-  }
 
-  /* the ADVENTURE line: sits BELOW the title on its own row, gradient fill,
-     no keyline */
-  .tag{
-    display:block;width:100%;margin-top:-2px;
-    font-family:'Mochiy Pop One','M PLUS Rounded 1c',sans-serif;
-    font-weight:400;font-size:clamp(12px,1.75vw,17px);
-    transform:skewX(-9deg);
-    letter-spacing:.20em;text-transform:uppercase;
-    background:linear-gradient(96deg,#8f7ce4 0%,#6f86e8 45%,#4fa6ec 100%);
-    -webkit-background-clip:text;background-clip:text;color:transparent;
-  }
+  .importRow{display:flex;flex-direction:column;align-items:center;gap:8px}
 
-  #addBtn{
-    position:absolute;right:0;top:50%;transform:translateY(-50%);
-    font-family:inherit;font-weight:800;font-size:14px;
+  #importBtn{
+    flex:0 0 auto;white-space:nowrap;
+    font-family:inherit;font-weight:800;font-size:13px;
     color:#4c4a86;cursor:pointer;
-    padding:12px 22px;border:0;border-radius:999px;
+    padding:10px 20px;border:0;border-radius:999px;
     background:#dcdcf7;
     box-shadow:0 3px 0 rgba(158,158,215,.45),0 6px 14px rgba(120,130,195,.18),
                0 1px 0 rgba(255,255,255,.9) inset;
     letter-spacing:.02em;
     transition:transform .12s,box-shadow .12s,filter .12s;
   }
-  #addBtn:hover{transform:translateY(-50%) translateY(-2px);filter:brightness(1.03);box-shadow:0 5px 0 rgba(158,158,215,.45),0 10px 20px rgba(120,130,195,.22),0 1px 0 rgba(255,255,255,.9) inset}
-  #addBtn:active{transform:translateY(-50%) translateY(2px);box-shadow:0 1px 0 rgba(158,158,215,.45),0 3px 8px rgba(120,130,195,.2)}
+  #importBtn:hover{transform:translateY(-2px);filter:brightness(1.03);box-shadow:0 5px 0 rgba(158,158,215,.45),0 10px 20px rgba(120,130,195,.22),0 1px 0 rgba(255,255,255,.9) inset}
+  #importBtn:active{transform:translateY(2px);box-shadow:0 1px 0 rgba(158,158,215,.45),0 3px 8px rgba(120,130,195,.2)}
+
+  .importStatus{font-size:12px;font-weight:700;color:var(--ink-soft);min-height:15px}
+  .importStatus.ok{color:var(--blue-deep)}
+  .importStatus.err{color:#e0566f}
 
   /* ---------------- rows ---------------- */
   .cols{
@@ -156,7 +116,9 @@
                0 8px 18px rgba(90,105,175,.14);
   }
 
-  .name{font-weight:700;font-size:17px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .name{display:flex;flex-direction:column;gap:1px;overflow:hidden}
+  .name-main{font-weight:700;font-size:17px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .name-song{font-weight:600;font-size:11px;color:var(--ink-soft);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .score{
     text-align:right;font-weight:800;font-size:19px;color:var(--blue-deep);
     font-variant-numeric:tabular-nums;letter-spacing:.01em;
@@ -194,52 +156,12 @@
     background:rgba(126,132,170,.13);
   }
 
-  /* ---------------- modal ---------------- */
-  .veil{
-    position:fixed;inset:0;z-index:80;display:none;align-items:center;justify-content:center;
-    padding:20px;background:rgba(80,88,140,.4);
-  }
-  .veil.on{display:flex}
-  .card{
-    width:100%;max-width:380px;border-radius:24px;padding:26px;
-    background:linear-gradient(180deg,#fff,#f4f4fd);
-    border:3px solid #fff;
-    box-shadow:0 10px 0 rgba(150,144,205,.35),0 20px 44px rgba(70,85,160,.3);
-    animation:pop .26s cubic-bezier(.2,1.3,.4,1);
-  }
-  .card h2{
-    font-size:22px;font-weight:900;text-align:center;margin-bottom:18px;
-    color:var(--blue);font-style:italic;
-  }
-  label{display:block;font-size:11px;font-weight:800;letter-spacing:.16em;
-        color:var(--ink-soft);margin:0 0 6px;text-transform:uppercase}
-  input,select{
-    width:100%;padding:12px 14px;margin-bottom:14px;border-radius:13px;
-    border:2px solid #ddd9f2;background:#fff;color:var(--ink);
-    font-family:inherit;font-size:16px;font-weight:700;outline:none;
-  }
-  input:focus,select:focus{border-color:var(--blue)}
-  .hint{font-size:12px;color:var(--ink-soft);margin:-8px 0 14px;font-weight:500}
-  .btns{display:flex;gap:10px;margin-top:6px}
-  .btns button{
-    flex:1;padding:13px;border-radius:999px;cursor:pointer;border:0;
-    font-family:inherit;font-weight:800;font-size:14px;transition:transform .12s;
-  }
-  .btns .no{background:#e6e3f4;color:var(--ink-soft);box-shadow:0 3px 0 #cdc8e4}
-  .btns .go{background:#dcdcf7;color:#4c4a86;box-shadow:0 3px 0 rgba(158,158,215,.45),0 1px 0 rgba(255,255,255,.9) inset}
-  .btns button:active{transform:translateY(2px)}
-  .err{color:#e0566f;font-size:12.5px;font-weight:700;min-height:16px;margin-bottom:6px}
-
   @media(max-width:600px){
-    #addBtn{position:static;transform:none;margin-top:16px}
-    #addBtn:hover{transform:translateY(-2px)}
-    #addBtn:active{transform:translateY(2px)}
-    header{margin-bottom:22px;text-align:center;padding-right:0}
+    header{margin-bottom:26px}
+    .wordmark{height:56px}
     .cols,.row{grid-template-columns:40px 1fr 96px 58px;gap:10px;padding-left:13px;padding-right:13px}
     .rank{width:30px;height:30px;font-size:14px}
     .name{font-size:15px}.score{font-size:16px}.grade{font-size:12px;min-width:50px;padding:6px 9px}
-    h1::before{-webkit-text-stroke:3px #fff}
-    .tag{-webkit-text-stroke:2.5px #fff}
   }
 </style>
 </head>
@@ -257,62 +179,39 @@
 
 <div class="wrap">
   <header>
-    <h1 data-text="LEADERBOARD"><span>LEADERBOARD</span></h1>
-    <div class="tag">Bing Bang Dream Adventure</div>
-    <button id="addBtn">+ New Player</button>
+    <img class="wordmark" src="assets/leaderboard_wordmark.png" alt="Leaderboard">
+    <div class="importRow">
+      <button id="importBtn">Import Results</button>
+      <input id="importInput" type="file" accept="application/json,.json" hidden>
+      <span class="importStatus" id="importStatus">from leaderboard_data.json, written by the game each time you finish a song</span>
+    </div>
   </header>
 
   <div class="cols"><span>Rank</span><span>Player</span><span>Score</span><span>Rating</span></div>
   <div id="list"><div class="msg">Loading…</div></div>
 </div>
 
-<div class="veil" id="veil">
-  <div class="card">
-    <h2>New Entry</h2>
-    <div class="err" id="err"></div>
-    <label for="nick">Nickname</label>
-    <input id="nick" maxlength="18" placeholder="player1" autocomplete="off">
-    <label for="scoreIn">Score</label>
-    <input id="scoreIn" inputmode="numeric" placeholder="0" autocomplete="off">
-    <div class="hint">Out of 1,000,000 — the rating fills itself in.</div>
-    <label for="gradeIn">Rating</label>
-    <select id="gradeIn"></select>
-    <div class="btns">
-      <button id="cancelBtn" class="no">Cancel</button>
-      <button id="saveBtn" class="go">Add</button>
-    </div>
-  </div>
-</div>
-
 <script>
-const MAX = 1000000;
-
-// Same cutoffs the game uses, so the board agrees with the results screen.
-// Colours are the note palette pushed darker, since these sit on white.
+// Same cutoffs and labels node_2d.gd's _grade() uses, so the board agrees
+// with the results screen. Colours are the note palette pushed darker,
+// since these sit on white.
 const GRADES = [
-  {k:'SS+', min:0.99, c:'#e8479b', d:'#c02f7e'},
-  {k:'SS',  min:0.98, c:'#9558e2', d:'#7440be'},
-  {k:'S',   min:0.95, c:'#4f86e8', d:'#3765c4'},
-  {k:'A',   min:0.92, c:'#27aec2', d:'#178b9d'},
-  {k:'B',   min:0.89, c:'#6b8ed6', d:'#4f6fb4'},
-  {k:'C',   min:0.86, c:'#9b82c8', d:'#7c64a8'},
-  {k:'D',   min:0.70, c:'#cb7ba6', d:'#a95d85'},
-  {k:'F',   min:0.00, c:'#e0596c', d:'#bb3f52'},
+  {k:'SS+',  c:'#e8479b', d:'#c02f7e'},
+  {k:'SS',   c:'#9558e2', d:'#7440be'},
+  {k:'S',    c:'#4f86e8', d:'#3765c4'},
+  {k:'A',    c:'#27aec2', d:'#178b9d'},
+  {k:'B',    c:'#6b8ed6', d:'#4f6fb4'},
+  {k:'C',    c:'#9b82c8', d:'#7c64a8'},
+  {k:'D',    c:'#cb7ba6', d:'#a95d85'},
+  {k:'FAIL', c:'#e0596c', d:'#bb3f52'},
 ];
-const gradeFor  = s => GRADES.find(g => s / MAX >= g.min) || GRADES[GRADES.length - 1];
 const gradeMeta = k => GRADES.find(g => g.k === k) || GRADES[GRADES.length - 1];
 
 const KEY = 'bbda-leaderboard-v1';
 let rows = [];
 
 const $ = id => document.getElementById(id);
-const listEl = $('list'), veil = $('veil'), errEl = $('err');
-
-GRADES.forEach(g => {
-  const o = document.createElement('option');
-  o.value = g.k; o.textContent = g.k;
-  $('gradeIn').appendChild(o);
-});
+const listEl = $('list'), importStatus = $('importStatus');
 
 // hex -> rgba so the rating pill can sit slightly translucent over the card
 const rgba = (hex, a) => {
@@ -324,7 +223,7 @@ const fmt = n => n.toString().padStart(7, '0').replace(/\B(?=(\d{3})+(?!\d))/g, 
 
 function render(){
   if (!rows.length){
-    listEl.innerHTML = '<div class="msg">No scores yet — add the first one!</div>';
+    listEl.innerHTML = '<div class="msg">No scores yet — play a song, then import leaderboard_data.json</div>';
     return;
   }
   const sorted = [...rows].sort((a, b) => b.score - a.score);
@@ -336,12 +235,14 @@ function render(){
     el.style.animationDelay = (i * 40) + 'ms';
     el.innerHTML =
       '<div class="rank">' + (i + 1) + '</div>' +
-      '<div class="name"></div>' +
+      '<div class="name"><span class="name-main"></span><span class="name-song"></span></div>' +
       '<div class="score">' + fmt(r.score) + '</div>' +
       '<div class="grade" style="background:linear-gradient(158deg,' + rgba(g.c,.92) +
         ',' + rgba(g.d,.86) + ')"><span>' + r.grade + '</span></div>' +
       '<button class="del" title="remove">×</button>';
-    el.querySelector('.name').textContent = r.name;   // textContent, so odd names can't inject HTML
+    // textContent, so odd names/song titles can't inject HTML
+    el.querySelector('.name-main').textContent = r.name;
+    el.querySelector('.name-song').textContent = r.song || '';
     el.querySelector('.del').onclick = () => remove(r.id);
     listEl.appendChild(el);
   });
@@ -359,7 +260,7 @@ async function load(){
 
 async function save(){
   try { await window.storage.set(KEY, JSON.stringify(rows), true); }
-  catch (e) { console.error(e); errEl.textContent = 'Could not save — try again'; }
+  catch (e) { console.error(e); setStatus('Could not save — try again', 'err'); }
 }
 
 async function remove(id){
@@ -368,42 +269,50 @@ async function remove(id){
   await save();
 }
 
-function openModal(){
-  errEl.textContent = '';
-  $('nick').value = ''; $('scoreIn').value = '';
-  $('gradeIn').value = gradeFor(0).k;
-  veil.classList.add('on');
-  $('nick').focus();
+// Merges entries from an imported leaderboard_data.json, skipping ones
+// already on the board (matched by id) so re-importing after another play
+// doesn't duplicate earlier rows.
+function mergeImported(list){
+  const existing = new Set(rows.map(r => r.id));
+  let added = 0;
+  for (const rec of list){
+    if (!rec || typeof rec.score !== 'number' || !rec.name) continue;
+    const id = rec.id != null ? String(rec.id) : (rec.name + '-' + rec.score + '-' + (rec.at || ''));
+    if (existing.has(id)) continue;
+    existing.add(id);
+    rows.push({
+      id, name: String(rec.name), score: Math.max(0, Math.round(rec.score)),
+      grade: String(rec.grade || 'FAIL'), song: rec.song ? String(rec.song) : '',
+    });
+    added++;
+  }
+  return added;
 }
-const closeModal = () => veil.classList.remove('on');
 
-$('scoreIn').addEventListener('input', e => {
-  const digits = e.target.value.replace(/[^\d]/g, '');
-  e.target.value = digits;
-  if (digits) $('gradeIn').value = gradeFor(Math.min(parseInt(digits, 10), MAX)).k;
-});
+function setStatus(text, kind){
+  importStatus.textContent = text;
+  importStatus.className = 'importStatus' + (kind ? ' ' + kind : '');
+}
 
-async function submit(){
-  const name = $('nick').value.trim();
-  const raw  = $('scoreIn').value.replace(/[^\d]/g, '');
-  if (!name){ errEl.textContent = 'Enter a nickname'; return; }
-  if (!raw){ errEl.textContent = 'Enter a score'; return; }
-  const score = parseInt(raw, 10);
-  if (score > MAX){ errEl.textContent = 'Max score is 1,000,000'; return; }
-  rows.push({ id: Date.now() + '-' + Math.random().toString(36).slice(2, 7),
-              name, score, grade: $('gradeIn').value });
-  closeModal();
+$('importBtn').onclick = () => $('importInput').click();
+
+$('importInput').addEventListener('change', async e => {
+  const file = e.target.files[0];
+  e.target.value = '';
+  if (!file) return;
+  let list;
+  try {
+    const data = JSON.parse(await file.text());
+    list = Array.isArray(data) ? data : [data];
+  } catch (err){
+    setStatus('Could not read that file — pick leaderboard_data.json from the game folder', 'err');
+    return;
+  }
+  const added = mergeImported(list);
   render();
   await save();
-}
-
-$('addBtn').onclick = openModal;
-$('cancelBtn').onclick = closeModal;
-$('saveBtn').onclick = submit;
-veil.onclick = e => { if (e.target === veil) closeModal(); };
-document.addEventListener('keydown', e => {
-  if (e.key === 'Escape') closeModal();
-  if (e.key === 'Enter' && veil.classList.contains('on')) submit();
+  setStatus(added ? 'Imported ' + added + ' new result' + (added === 1 ? '' : 's')
+                  : 'No new results in that file', 'ok');
 });
 
 load();

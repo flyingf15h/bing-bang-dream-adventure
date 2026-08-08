@@ -89,6 +89,7 @@ var pause_rect: Rect2
 var last_seek_at: float = -999.0
 var ui_time: float = 0.0
 var finish_ui: float = -1.0
+var results_saved := false
 
 var font_bold: FontVariation
 var font_heavy: FontVariation
@@ -252,6 +253,43 @@ func _grade() -> Array:
 	return [key, ramp[0], pct, ramp[1]]
 
 
+const LEADERBOARD_PATH := "res://leaderboard_data.json"
+
+func _save_result() -> void:
+	## Appends this play to leaderboard_data.json, which leaderboard.html
+	## imports by hand (there is no server, so the page can't fetch it itself).
+	var entries: Array = []
+	if FileAccess.file_exists(LEADERBOARD_PATH):
+		var rf := FileAccess.open(LEADERBOARD_PATH, FileAccess.READ)
+		var parsed = JSON.parse_string(rf.get_as_text())
+		rf.close()
+		if typeof(parsed) == TYPE_ARRAY:
+			entries = parsed
+
+	var uname: String = OS.get_environment("USERNAME")
+	if uname == "":
+		uname = OS.get_environment("USER")
+	if uname == "":
+		uname = "Player"
+
+	entries.append({
+		"id": "%d-%d" % [Time.get_unix_time_from_system(), randi() % 100000],
+		"name": uname,
+		"score": score,
+		"grade": String(_grade()[0]),
+		"song": song_title,
+		"combo": best_combo,
+		"at": Time.get_datetime_string_from_system(),
+	})
+
+	var wf := FileAccess.open(LEADERBOARD_PATH, FileAccess.WRITE)
+	if wf == null:
+		push_warning("Could not write %s" % LEADERBOARD_PATH)
+		return
+	wf.store_string(JSON.stringify(entries, "\t"))
+	wf.close()
+
+
 const RESULT_ART_FAIL: Texture2D = preload("res://assets/game_loss.png")
 const RESULT_ART_PASS: Texture2D = preload("res://assets/start_bg.png")
 const RESULT_ART_SUCCESS: Texture2D = preload("res://assets/game_win.png")
@@ -286,6 +324,9 @@ func _process(delta: float) -> void:
 	ui_time += delta
 	if finished and finish_ui < 0.0:
 		finish_ui = ui_time
+	if finished and not results_saved:
+		results_saved = true
+		_save_result()
 	if paused or finished:
 		_tick_visuals(delta)
 		queue_redraw()
@@ -633,6 +674,7 @@ func _restart() -> void:
 	started = false
 	finished = false
 	finish_ui = -1.0
+	results_saved = false
 	paused = false
 	song_time = -start_delay
 	score = 0
