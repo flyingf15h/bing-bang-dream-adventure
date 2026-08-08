@@ -436,13 +436,18 @@ func _judge_for(err_ms: float) -> String:
 	return ""
 
 
-func _try_hit(sector: int) -> void:
+func _try_hit(sector: int, lag_ms: float = 0.0) -> void:
+	# lag_ms backdates the hit to when the input really happened. A key or a
+	# click is known the instant it arrives and passes zero; a flick is only
+	# recognised once it is over, so it arrives about half a gesture late and
+	# would otherwise be judged against a moment that has already passed.
+	var at: float = song_time - lag_ms / 1000.0
 	var best: Dictionary = {}
 	var best_err: float = 1e9
 	for n in notes:
 		if String(n["state"]) != "wait" or int(n["sector"]) != sector:
 			continue
-		var err: float = (song_time - float(n["t"])) * 1000.0
+		var err: float = (at - float(n["t"])) * 1000.0
 		if absf(err) <= win_near and absf(err) < absf(best_err):
 			best = n
 			best_err = err
@@ -465,8 +470,18 @@ func _try_hit(sector: int) -> void:
 func _on_tap(event: TapEvent) -> void:
 	# Mouse/touch/IMU all funnel through TapInputBus and land here, reusing
 	# the exact same _try_hit() scoring path as the A/S/D/J/K/L keys.
-	if autoplay or paused or not started or finished:
+	if finished:
+		_results_tap(event)
 		return
+	if autoplay or paused or not started:
+		return
+
+	# A flick from the IMU names its direction outright: the board is not
+	# anywhere on screen, so there is no position to read an angle from.
+	if event.has_direction():
+		_try_hit(_nearest_sector(event.direction_deg), event.lag_ms)
+		return
+
 	var offset: Vector2 = event.screen_position - centre
 	if offset.length() < 12.0:
 		return # too close to centre to read a direction
@@ -474,6 +489,28 @@ func _on_tap(event: TapEvent) -> void:
 	if angle_deg < 0.0:
 		angle_deg += 360.0
 	_try_hit(_nearest_sector(angle_deg))
+
+
+func _results_tap(event: TapEvent) -> void:
+	## Leaving the results screen with nothing but the board in your hand.
+	##
+	## Without this the board can start a song and play it but not get out of
+	## the screen at the end, which leaves "play with the IMU" needing a
+	## keyboard anyway -- and needing it at the one moment the player has both
+	## hands on the board.
+	##
+	## Up and down rather than any flick, because the results screen appears
+	## the instant the last note resolves and a player mid-gesture would
+	## otherwise restart the song by accident. Requiring a deliberate vertical
+	## flick also leaves the sideways lanes free to mean nothing here, which is
+	## what a stray flick usually is.
+	if event.source != "imu" or finish_ui < 0.0:
+		return
+	match event.vertical():
+		1:
+			_restart()
+		-1:
+			get_tree().change_scene_to_file("res://Start.tscn")
 
 
 func _finish(n: Dictionary, verdict: String) -> void:
@@ -617,15 +654,39 @@ func _arc_poly(r: float, a_c: float, half_deg: float, thick: float) -> PackedVec
 	var steps: int = clampi(int(half_deg * 1.6), 4, 40)
 	var outer := PackedVector2Array()
 	var inner := PackedVector2Array()
+	# Keep both edges on the near side of the centre, and refuse the band
+	# outright when it does not survive that.
+	#
+	# Notes begin their travel at the middle, so a small r is normal. The halo
+	# passes ask for a band 2.3x the note's thickness, and the nine-band loop
+	# asks for centre radii as low as r - thick/2, which is negative there. A
+	# negative radius does not draw a smaller band: `centre + v * -k` lands on
+	# the opposite side of the ring, so the edge mirrors, the polygon crosses
+	# itself, and triangulation rejects it -- once per band per note per frame.
+	# Clamping to zero only trades that for a run of identical points at the
+	# centre, which is degenerate too, so the floor is a small positive radius
+	# and a band left thinner than a quarter pixel is simply not drawn.
+	var r_out: float = r + thick * 0.5
+	var r_in: float = maxf(0.5, r - thick * 0.5)
+	if r_out < r_in + 0.25:
+		return PackedVector2Array()
 	for i in steps + 1:
 		var a: float = lerpf(a_c - half_deg, a_c + half_deg, float(i) / steps)
 		var v := _vec(a)
-		outer.append(centre + v * (r + thick * 0.5))
-		inner.append(centre + v * (r - thick * 0.5))
+		outer.append(centre + v * r_out)
+		inner.append(centre + v * r_in)
 	inner.reverse()
 	var poly := outer
 	poly.append_array(inner)
 	return poly
+
+
+func _fill_arc(r: float, a_c: float, half_deg: float, thick: float,
+			   col: Color) -> void:
+	## Draw an arc band, skipping the ones _arc_poly refused as undrawable.
+	var poly := _arc_poly(r, a_c, half_deg, thick)
+	if poly.size() >= 3:
+		draw_colored_polygon(poly, col)
 
 
 func _arc_line(r: float, a_c: float, half_deg: float) -> PackedVector2Array:
@@ -661,17 +722,16 @@ func _draw_note_body(r: float, a_c: float, half_len: float, thick: float,
 	var r_out: float = r + thick * 0.5
 	var r_in: float = r - thick * 0.5
 
-	draw_colored_polygon(_arc_poly(r, a_c, half_deg * 1.05, thick * 2.3),
+	_fill_arc(r, a_c, half_deg * 1.05, thick * 2.3,
 		Color(outer_c.r, outer_c.g, outer_c.b, 0.13 * alpha))
-	draw_colored_polygon(_arc_poly(r, a_c, half_deg * 1.02, thick * 1.5),
+	_fill_arc(r, a_c, half_deg * 1.02, thick * 1.5,
 		Color(inner_c.r, inner_c.g, inner_c.b, 0.16 * alpha))
 
 	var bands: int = 9
 	for i in bands:
 		var tc: float = (float(i) + 0.5) / bands
 		var c: Color = _band_colour(outer_c, inner_c, tc)
-		draw_colored_polygon(
-			_arc_poly(r + (tc - 0.5) * thick, a_c, half_deg, thick / bands + 0.9),
+		_fill_arc(r + (tc - 0.5) * thick, a_c, half_deg, thick / bands + 0.9,
 			Color(c.r, c.g, c.b, 0.97 * alpha))
 
 	var ow: float = 2.4
@@ -713,11 +773,26 @@ func _ribbon_poly(ang: PackedFloat32Array, rad: PackedFloat32Array,
 				  wid: PackedFloat32Array, mul: float) -> PackedVector2Array:
 	var outer := PackedVector2Array()
 	var inner := PackedVector2Array()
+	# Notes travel outward from the centre, so a slide's tail sits at a small
+	# radius -- and once that radius drops below the ribbon's own half-width
+	# there is no ribbon to draw there. Left alone, rad - hw goes negative and
+	# the inner edge does not shrink to nothing, it mirrors to the far side of
+	# the ring; the polygon crosses itself, and triangulation refuses a
+	# self-intersecting polygon once per ribbon per frame. Clamping the inner
+	# radius to zero instead of dropping the points only trades that for a run
+	# of identical points at the centre, which is degenerate in its own right.
+	#
+	# Radius falls monotonically along the ribbon, so the undrawable part is
+	# always a tail: stopping at it truncates rather than punching a hole.
 	for i in ang.size():
-		var v := _vec(ang[i])
 		var hw: float = wid[i] * mul * 0.5
+		if rad[i] - hw <= 0.5:
+			break
+		var v := _vec(ang[i])
 		outer.append(centre + v * (rad[i] + hw))
 		inner.append(centre + v * (rad[i] - hw))
+	if outer.size() < 2:
+		return PackedVector2Array()
 	inner.reverse()
 	var poly := outer
 	poly.append_array(inner)
@@ -752,15 +827,21 @@ func _draw_slide(n: Dictionary) -> void:
 
 	var boost: float = 1.15 if lit else 1.0
 
+	# The wider the halo, the sooner its inner edge would cross the centre, so
+	# each pass truncates at its own point and any of them can come back empty.
 	var halo := [2.1, 1.6, 1.3]
 	var halo_a := [0.075, 0.095, 0.115]
 	for i in halo.size():
-		draw_colored_polygon(_ribbon_poly(ang, rad, wid, float(halo[i])),
-			Color(mid_c.r, mid_c.g, mid_c.b, float(halo_a[i]) * boost))
+		var halo_poly := _ribbon_poly(ang, rad, wid, float(halo[i]))
+		if halo_poly.size() >= 3:
+			draw_colored_polygon(halo_poly,
+				Color(mid_c.r, mid_c.g, mid_c.b, float(halo_a[i]) * boost))
 
 	var core := _band_colour(outer_c, inner_c, 0.5)
-	draw_colored_polygon(_ribbon_poly(ang, rad, wid, 1.0),
-		Color(core.r, core.g, core.b, 0.58 * boost))
+	var core_poly := _ribbon_poly(ang, rad, wid, 1.0)
+	if core_poly.size() >= 3:
+		draw_colored_polygon(core_poly,
+			Color(core.r, core.g, core.b, 0.58 * boost))
 
 	var out_pts := PackedVector2Array()
 	var in_pts := PackedVector2Array()
@@ -1230,6 +1311,8 @@ func _draw_results(vp: Vector2) -> void:
 		_draw_ghost_number(Vector2(axis + dx + 26.0, ry + 4.0), val, 26, acc, s3)
 
 	var f_txt := "press  R  to replay"
+	if ImuInput.link_up:
+		f_txt = "flick  UP  to replay      flick  DOWN  to quit      or press  R"
 	_draw_ink(font_bold,
 		Vector2(cx - _text_w(font_bold, f_txt, 14) * 0.5, vp.y - 30.0),
 		f_txt, 14, Color(RES_INK_DIM.r, RES_INK_DIM.g, RES_INK_DIM.b, 0.75 * a))	

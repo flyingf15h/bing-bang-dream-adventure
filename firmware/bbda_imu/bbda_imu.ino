@@ -43,6 +43,21 @@ static void outFlush();
 static void emitInfo(const char *key, const char *value);
 static void handleCommand(char *line);
 
+/* Rescue hatch. `wifi auto on` makes the board join at boot -- and if joining
+ * is what resets it (a supply that cannot meet the radio's transmit current is
+ * the usual reason), the board reboots before it has been up long enough to
+ * accept the command that would turn the setting off. The serial port then
+ * appears and vanishes on a one-second cycle and there is no way in.
+ *
+ * Building with -DBBDA_SKIP_AUTOJOIN=1 produces a firmware that ignores the
+ * stored setting, which is long enough to send `wifi auto off` and flash the
+ * normal build back. It is a build-time flag precisely because the runtime is
+ * the thing that is unreachable, and it leaves NVS -- calibration included --
+ * untouched, which erasing the partition would not. */
+#ifndef BBDA_SKIP_AUTOJOIN
+#define BBDA_SKIP_AUTOJOIN 0
+#endif
+
 /* ------------------------------------------------------------------ */
 /* Board configuration                                                 */
 /* ------------------------------------------------------------------ */
@@ -1451,6 +1466,40 @@ static void pollSerialCommands() {
 /* ------------------------------------------------------------------ */
 void setup() {
   Serial.begin(SERIAL_BAUD);
+
+#if ARDUINO_USB_CDC_ON_BOOT
+  /* Never let a write to USB wait for the host.
+   *
+   * With "USB CDC On Boot" enabled, `Serial` is not a UART: it is a USB CDC
+   * endpoint, and its write() blocks until the host drains the buffer or a
+   * timeout expires. That timeout defaults to 100 ms, and the buffer only
+   * drains when something on the other end is actually reading.
+   *
+   * At 200 Hz that is fatal rather than merely slow. Every sample is a
+   * write(); if the host stops reading -- the bridge exits, the game is
+   * alt-tabbed away, a serial monitor is left open but scrolled back, the
+   * cable is still plugged into a sleeping laptop -- each one stalls loop()
+   * for 100 ms. The IRQ that services the FIFO stops being polled, samples
+   * are lost, WiFi is starved, and the board looks like it has crashed while
+   * being perfectly healthy. Over UDP the symptom is stranger still: the
+   * network output stutters for a reason that lives entirely in the USB
+   * stack, which is not where anyone looks.
+   *
+   * A timeout of zero makes write() drop what it cannot deliver and return
+   * immediately. That is the right trade for telemetry: the newest sample is
+   * always worth more than the one being waited on, and a reader that has
+   * gone away is not owed a backlog. Records that do arrive are unaffected --
+   * each line is written whole -- and every record carries a timestamp, so a
+   * dropped one shows up as a gap rather than as a corrupted line.
+   *
+   * Guarded because with CDC on boot *disabled* `Serial` is a HardwareSerial
+   * on UART0, which has no such method and would not compile. */
+  Serial.setTxTimeoutMs(0);
+#endif
+
+  /* Wait a moment for a host to open the port, so the banner is not lost to
+   * a terminal that was a fraction of a second late. Bounded because the
+   * board must come up with no host at all: on WiFi, or on a charger. */
   uint32_t t0 = millis();
   while (!Serial && millis() - t0 < 3000) { delay(10); }
 
@@ -1490,8 +1539,41 @@ void setup() {
   /* After the sensors, so a network that refuses to come up delays the
    * banner rather than the bring-up, and never stops the board working over
    * USB -- which is the transport you have when the network is the problem. */
-  if (g_wifi_auto && g_ssid[0] != '\0') {
-    wifiConnect();
+  if (g_wifi_auto && g_ssid[0] != '\0' && !BBDA_SKIP_AUTOJOIN) {
+    /* Joining is the one thing in setup() that can reset the board rather
+     * than fail: bringing the radio up draws several hundred milliamps, and a
+     * supply that cannot meet it browns out. With `wifi auto on` that reset
+     * lands back here, and the board reboots roughly once a second for ever --
+     * never up long enough to accept the `wifi auto off` that would stop it.
+     * The serial port appears and vanishes on the same cycle, so there is no
+     * way in short of reflashing.
+     *
+     * So the attempt is recorded before it is made and cleared once it
+     * succeeds. Two boots that both died mid-join means joining is what is
+     * killing the board, and the third comes up on USB with the radio off,
+     * saying why. The setting is left alone -- the board is not entitled to
+     * decide it was wrong, only to stop walking into it. */
+    g_nvs.begin("bbda", false);
+    uint8_t attempts = g_nvs.getUChar("joinfail", 0);
+    if (attempts >= 2) {
+      g_nvs.putUChar("joinfail", 0);
+      g_nvs.end();
+      outPrintln(F("ERR wifi: two boots died while joining, so the radio is "
+                   "off this time."));
+      outPrintln(F("    Almost always a supply that cannot meet the radio's "
+                   "transmit current:"));
+      outPrintln(F("    try a shorter or thicker USB cable, a different port, "
+                   "or a powered hub."));
+      outPrintln(F("    `wifi connect` retries now; `wifi auto off` stops it "
+                   "trying at boot."));
+    } else {
+      g_nvs.putUChar("joinfail", (uint8_t)(attempts + 1));
+      g_nvs.end();
+      const bool joined = wifiConnect();
+      g_nvs.begin("bbda", false);
+      g_nvs.putUChar("joinfail", joined ? 0 : (uint8_t)(attempts + 1));
+      g_nvs.end();
+    }
   }
 
   printBanner();

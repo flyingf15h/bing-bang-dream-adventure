@@ -13,11 +13,14 @@ const POP_DURATION: float = 0.16
 const FINAL_HOLD: float = 0.5
 const LOGO_FADE_DURATION: float = 0.35
 
+const TapEvent = preload("res://TapInputBus.gd").TapEvent
+
 @onready var logo: TextureRect = $Logo
 @onready var start_button: TextureButton = $StartButton
 
 var _hover_tween: Tween
 var _button_ready := false
+var _imu_label: Label
 
 
 func _ready() -> void:
@@ -32,7 +35,49 @@ func _ready() -> void:
 	start_button.pressed.connect(_on_start_pressed)
 	_generate_click_mask()
 
+	# The board is a valid way to press this button, so it has to be a valid
+	# way to get past this screen too -- otherwise "play with the IMU" still
+	# means reaching for the mouse first.
+	TapInputBus.tap.connect(_on_tap)
+	_build_imu_label()
+
 	_play_intro()
+
+
+func _build_imu_label() -> void:
+	## A player holding only the board has no way to tell whether the bridge is
+	## running, and an unresponsive title screen is indistinguishable from a
+	## broken one. This says which it is.
+	_imu_label = Label.new()
+	_imu_label.add_theme_font_size_override("font_size", 15)
+	_imu_label.set_anchors_preset(Control.PRESET_BOTTOM_WIDE)
+	_imu_label.offset_top = -40.0
+	_imu_label.offset_bottom = -14.0
+	_imu_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	add_child(_imu_label)
+	_refresh_imu_label()
+	ImuInput.link_changed.connect(func(_up: bool) -> void: _refresh_imu_label())
+
+
+func _refresh_imu_label() -> void:
+	if not is_instance_valid(_imu_label):
+		return
+	if ImuInput.link_up:
+		_imu_label.text = "IMU ready — flick the board to start"
+		_imu_label.modulate = Color(0.65, 1.0, 0.75, 0.9)
+	elif not ImuInput.enabled:
+		_imu_label.text = ""
+	else:
+		_imu_label.text = "no IMU bridge — run  python dashboard/game_bridge.py"
+		_imu_label.modulate = Color(1.0, 1.0, 1.0, 0.35)
+
+
+func _on_tap(event: TapEvent) -> void:
+	# Only the IMU: a mouse click on this screen is already the button's job,
+	# and routing clicks through here as well would fire it twice.
+	if event.source != "imu" or not _button_ready:
+		return
+	_on_start_pressed()
 
 
 func _generate_click_mask() -> void:
@@ -80,6 +125,7 @@ func _pop_in_phase(tex: Texture2D) -> void:
 
 func _enable_button() -> void:
 	_button_ready = true
+	_refresh_imu_label()
 	start_button.disabled = false
 	start_button.scale = Vector2(1.3, 1.3)
 	var tw := create_tween().set_parallel(true)

@@ -35,9 +35,14 @@ the overview and the record of what was measured on real hardware.
 ```
 firmware/bbda_imu/     Arduino sketch, QMC6309 driver, protocol definition
 dashboard/             PySide6 + pyqtgraph dashboard
+dashboard/game_bridge.py   feeds IMU flicks to the game, over USB or WiFi
 dashboard/tests/       self-checks for the maths (no hardware needed)
+ImuInput.gd            game-side UDP listener for those flicks (autoload)
+ImuTest.tscn           diagnostic screen for the IMU link
 docs/USAGE.md          everything the board and dashboard can do
 docs/CALIBRATION.md    calibration + axis-alignment guide (also shown in-app)
+docs/GAME_INPUT.md     playing by flicking the board, and fixing it when it stops
+docs/WIFI.md           running the board untethered, and the brownout that stops it
 ```
 
 ---
@@ -55,9 +60,25 @@ arduino-cli compile --fqbn "esp32:esp32:esp32s3:CDCOnBoot=cdc" firmware/bbda_imu
 arduino-cli upload  --fqbn "esp32:esp32:esp32s3:CDCOnBoot=cdc" -p COM14 firmware/bbda_imu
 ```
 
-Open a serial monitor at **921600** baud. The board prints a full inventory of
-what it found and how it is configured, then a readable sample block a few
-times a second. Type `help` for the command list.
+Open a serial monitor at **921600** baud — though on this board that number is
+decoration: the USB port is the ESP32-S3's own, so there is no UART whose rate
+could be set. The board prints a full inventory of what it found and how it is
+configured, then a readable sample block a few times a second. Type `help` for
+the command list.
+
+**Playing the game with the board**
+
+Start the bridge next to the game and flick the board to hit notes:
+
+```bash
+cd dashboard
+python game_bridge.py                       # over USB, finds the board itself
+python game_bridge.py --host 192.168.1.50   # over WiFi instead
+python game_bridge.py --demo                # no board: fake flicks, to test the game
+```
+
+`docs/GAME_INPUT.md` covers setup over either transport, the diagnostic screen
+(`ImuTest.tscn`), tuning, and the ESP32-S3 USB CDC traps.
 
 **Dashboard**
 
@@ -124,13 +145,20 @@ step that learns the mounting from directed movements are all verified only
 against synthetic data (134 checks in `tests/test_motion.py`). They are
 unproven on real motion.
 
-**The UDP transport is likewise unproven on hardware.** The firmware compiles
-and the dashboard's UDP link is verified end to end against a simulated board
-that reproduces the firmware's behaviour — auto-targeting, batched datagrams,
-commands in both directions, clean disconnect — but no packet has yet crossed
-a real network from this board. What is untested is the ESP32 side: whether
-the radio keeps up at the higher stream rates, and how the sample loop behaves
-while WiFi is associating.
+**The UDP transport now works on hardware, but the board cannot sustain it.**
+The board joined a real network, took commands over UDP and streamed records
+back — auto-targeting, batched datagrams and command replies all confirmed
+against the real firmware, not a simulation. What it cannot do is keep going:
+after a few dozen samples the board resets, and with `wifi auto on` set it
+reboots roughly once a second indefinitely.
+
+The cause is electrical rather than in the firmware. The radio's transmit
+bursts pull more current than the supply delivers, the brownout detector
+fires, and the chip resets — which is why USB-only runs are flawless for hours
+at 200 Hz while WiFi dies in seconds. **docs/WIFI.md** has the evidence, the
+fixes (shorter cable, better port, powered hub, bulk capacitance) and the
+recovery procedure. The firmware now refuses to auto-join after two boots that
+died mid-join, so this can no longer leave a board with no way in.
 
 ## Known issue: APEX initialises once per IMU power-on
 
@@ -400,8 +428,9 @@ board perfectly still, and a frozen stream looks exactly like success.
 ## Tests
 
 ```bash
-python dashboard/tests/test_math.py     # 23 checks
-python dashboard/tests/test_motion.py   # 134 checks
+python dashboard/tests/test_math.py        # 23 checks
+python dashboard/tests/test_motion.py      # 134 checks
+python dashboard/tests/test_gamebridge.py  # 31 checks
 ```
 
 `test_math.py` covers the ellipsoid fit, the six-position solve and the
@@ -422,7 +451,15 @@ the rest requirement, and the nudge and noise rejections; flip detection; and
 the frame solve against all 24 mountings, with noise, with a genuinely crooked
 board, and against the inputs it must refuse.
 
-Neither needs hardware or a display.
+`test_gamebridge.py` covers the bridge that feeds the game: the bearing-to-lane
+conversion against the game's real lane layout, the fact that the default
+sector offset centres flicks on lanes rather than boundaries and that an
+unoffset grid would not, every direction surviving detection and JSON encoding
+over a real loopback socket, strength scaling and saturation, the refusals (a
+roll about the front, a flick landing on a lane boundary), and that sending
+with no game listening does not take the bridge down.
+
+None of them needs hardware or a display.
 
 ---
 

@@ -778,7 +778,7 @@ def flick_bearing_map(count: int = 6, offset_deg: float = 0.0) -> SectorMap:
 # ----------------------------------------------------------------------
 @dataclass
 class Flick:
-    t: float
+    t: float             # when the event *ended*; see peak_t
     axis: str            # "x", "y" or "z"
     direction: int       # +1 or -1, right-hand rule about that axis
     peak_dps: float      # peak angular rate on the dominant axis
@@ -787,6 +787,19 @@ class Flick:
     duration_ms: float
     sector: Sector | None = None   # set only in sector mode
     peak_vector: np.ndarray = field(default_factory=lambda: np.zeros(3))
+
+    #: When the rotation peaked. Anything timing a flick against something
+    #: else -- music, most obviously -- wants this and not ``t``.
+    #:
+    #: A flick cannot be recognised until it is over, so ``t`` is necessarily
+    #: the moment the rate fell back below the off threshold. Treating that as
+    #: when the flick *happened* puts every one late by roughly half its
+    #: duration, and because that is half of a quantity the player varies
+    #: freely -- 30 ms for a sharp flick, 75 ms for a lazy one -- it is not a
+    #: constant that can be calibrated away. The peak is the middle of the
+    #: gesture and the moment the direction is clearest, which makes it the
+    #: honest answer to "when did this happen".
+    peak_t: float = 0.0
 
     @property
     def label(self) -> str:
@@ -871,6 +884,7 @@ class FlickDetector:
         self._start_t = 0.0
         self._peak_vector = np.zeros(3)
         self._peak_norm = 0.0
+        self._peak_t = 0.0
         self._peak_accel = 0.0
         self._last_emit_t = -1e9
 
@@ -878,6 +892,7 @@ class FlickDetector:
         self._active = False
         self._peak_vector = np.zeros(3)
         self._peak_norm = 0.0
+        self._peak_t = 0.0
         self._peak_accel = 0.0
         self._last_emit_t = -1e9
 
@@ -895,6 +910,7 @@ class FlickDetector:
                 self._start_t = t
                 self._peak_vector = gyro.copy()
                 self._peak_norm = rate
+                self._peak_t = t
                 self._peak_accel = linear
             return None
 
@@ -902,6 +918,7 @@ class FlickDetector:
         if rate > self._peak_norm:
             self._peak_norm = rate
             self._peak_vector = gyro.copy()
+            self._peak_t = t
         self._peak_accel = max(self._peak_accel, linear)
 
         duration_ms = (t - self._start_t) * 1000.0
@@ -958,6 +975,7 @@ class FlickDetector:
             duration_ms=duration_ms,
             sector=sector,
             peak_vector=self._peak_vector.copy(),
+            peak_t=self._peak_t,
         )
 
 
