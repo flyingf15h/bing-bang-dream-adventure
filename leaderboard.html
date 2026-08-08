@@ -3,246 +3,283 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>BING BING RHYTHM WAR — Leaderboard</title>
+<title>BING BANG DREAM ADVENTURE — Leaderboard</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@500;700;900&family=Share+Tech+Mono&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Titan+One&family=Mochiy+Pop+One&family=M+PLUS+Rounded+1c:wght@400;500;700;800;900&display=swap" rel="stylesheet">
 <style>
+  /* Put whichever wordmark font you have in a fonts/ folder next to this file.
+     The browser walks this list and uses the first one that loads, so any
+     single file is enough; Titan One is the fallback if none are present. */
+  @font-face{
+    font-family:'Wordmark';
+    src:url('fonts/subadaiboldital.ttf') format('truetype'),
+        url('fonts/subadaibold.ttf') format('truetype'),
+        url('fonts/subadaiital.ttf') format('truetype'),
+        url('fonts/subadai.ttf') format('truetype');
+    font-weight:400;font-display:swap;
+  }
   :root{
-    --bg-deep:#02040f;
-    --bg-mid:#070d24;
-    --violet:#6f7bff;
-    --violet-dim:#3a4a9f;
-    --violet-soft:#8fa6ff;
-    --cyan:#5ee9f0;
-    --panel-brd:rgba(126,152,240,.40);
-    --panel-bg:rgba(96,128,210,.055);
-    --panel-bg-hi:rgba(120,155,235,.11);
-    --ink:#e6ecff;
-    --ink-dim:#8ea0cc;
+    /* subadaiboldital is already slanted, so no extra CSS skew. Set to about
+       -12deg if you swap to an upright face or fall back to Titan One. */
+    --title-slant:0deg;
+    /* pulled from the title screen: pale blue on the left, lavender on the right */
+    --sky:#c9dcf5;
+    --lilac:#d5cbee;
+    --blue:#5b8de8;
+    --blue-deep:#3f6dd0;
+    --violet:#8b6fd6;
+    --ink:#3d4270;
+    --ink-soft:#7b81a8;
+    --card:rgba(255,255,255,.72);
+    --card-line:#c3c0e4;
   }
   *{box-sizing:border-box;margin:0;padding:0}
 
   body{
     min-height:100vh;
-    font-family:'Share Tech Mono',ui-monospace,'Cascadia Mono','Courier New',monospace;
+    font-family:'M PLUS Rounded 1c',system-ui,'Segoe UI',sans-serif;
     color:var(--ink);
     background:
-      radial-gradient(ellipse 130% 70% at 50% -12%, #113a7a 0%, transparent 58%),
-      radial-gradient(ellipse 80% 50% at 12% 8%, #0d5f78 0%, transparent 52%),
-      radial-gradient(ellipse 95% 60% at 82% 96%, #3b2a8c 0%, transparent 55%),
-      radial-gradient(ellipse 70% 45% at 40% 108%, #0a4a72 0%, transparent 50%),
-      linear-gradient(180deg,var(--bg-mid) 0%,var(--bg-deep) 62%,#01020a 100%);
+      radial-gradient(ellipse 70% 55% at 88% 12%, rgba(198,178,240,.55) 0%, transparent 60%),
+      radial-gradient(ellipse 60% 50% at 8% 88%, rgba(168,205,245,.5) 0%, transparent 58%),
+      linear-gradient(115deg,var(--sky) 0%,#d2d6f2 48%,var(--lilac) 100%);
     background-attachment:fixed;
-    position:relative;
-    overflow-x:hidden;
   }
 
-  /* perspective grid + scanlines: the retro layer */
-  /* slow-drifting grid, cyan-leaning */
-  body::before{
-    content:'';position:fixed;inset:-60px;pointer-events:none;z-index:0;
-    background-image:
-      linear-gradient(rgba(88,170,255,.13) 1px,transparent 1px),
-      linear-gradient(90deg,rgba(88,170,255,.13) 1px,transparent 1px);
-    background-size:46px 46px;
-    mask-image:radial-gradient(ellipse 82% 68% at 50% 38%,#000 22%,transparent 76%);
-    -webkit-mask-image:radial-gradient(ellipse 82% 68% at 50% 38%,#000 22%,transparent 76%);
-    animation:drift 14s linear infinite;
-  }
-  @keyframes drift{from{background-position:0 0}to{background-position:0 46px}}
+  /* loose sparkle marks, the same motif as the star on the wordmark */
+  .spark{position:fixed;pointer-events:none;opacity:.5;z-index:0}
+  .spark svg{display:block}
 
-  /* horizon glow across the lower third */
-  .horizon{
-    position:fixed;left:-10%;right:-10%;bottom:16%;height:1px;z-index:1;
-    pointer-events:none;
-    background:linear-gradient(90deg,transparent,rgba(110,220,255,.55),rgba(150,140,255,.5),transparent);
-    box-shadow:0 0 34px 7px rgba(70,160,255,.20);
-    opacity:.75;
-  }
-  body::after{
-    content:'';position:fixed;inset:0;pointer-events:none;z-index:60;
-    background:repeating-linear-gradient(0deg,rgba(0,0,0,.20) 0 1px,transparent 1px 3px);
-    opacity:.42;
-  }
+  .wrap{position:relative;z-index:2;max-width:820px;margin:0 auto;padding:38px 20px 80px}
 
-  .wrap{position:relative;z-index:2;max-width:900px;margin:0 auto;padding:34px 20px 70px}
+  /* ---------------- header ---------------- */
+  header{position:relative;text-align:left;margin-bottom:34px;padding-right:170px}
 
-  /* ---------- header ---------- */
-  header{position:relative;display:flex;align-items:center;justify-content:center;
-         min-height:74px;margin-bottom:8px}
+  /* Two stacked copies: white keyline underneath, gradient fill on top.
+     background-clip:text and -webkit-text-stroke fight each other on a single
+     element, so the outline has to be its own layer. */
   h1{
-    font-family:'Orbitron','Share Tech Mono',monospace;
-    font-weight:900;font-size:clamp(26px,5.2vw,46px);
-    letter-spacing:.16em;text-align:center;
-    background:linear-gradient(180deg,#fff 0%,#a9d8ff 48%,#7d8ce0 100%);
+    position:relative;display:inline-block;
+    font-family:'Wordmark','Titan One','M PLUS Rounded 1c',sans-serif;
+    font-weight:400;font-size:clamp(54px,11.5vw,108px);
+    letter-spacing:.012em;line-height:1.0;
+    text-transform:uppercase;
+    transform:skewX(var(--title-slant));
+    filter:drop-shadow(0 0 15px rgba(255,255,255,.95))
+           drop-shadow(0 4px 0 rgba(139,111,214,.22))
+           drop-shadow(0 10px 16px rgba(80,100,180,.22));
+  }
+  h1::before{
+    content:attr(data-text);
+    position:absolute;left:0;top:0;
+    -webkit-text-stroke:4px #fff;
+    color:#fff;
+    z-index:0;
+  }
+  h1 span{
+    position:relative;z-index:1;
+    background:linear-gradient(96deg,
+      #a06ee0 0%, #8a76e4 22%, #6f86e8 46%, #5b95ea 70%, #4fa6ec 100%);
+    -webkit-background-clip:text;background-clip:text;
+    color:transparent;
+  }
+
+  /* the ADVENTURE line: sits BELOW the title on its own row, gradient fill,
+     no keyline */
+  .tag{
+    display:block;width:100%;margin-top:-2px;
+    font-family:'Mochiy Pop One','M PLUS Rounded 1c',sans-serif;
+    font-weight:400;font-size:clamp(12px,1.75vw,17px);
+    transform:skewX(-9deg);
+    letter-spacing:.20em;text-transform:uppercase;
+    background:linear-gradient(96deg,#8f7ce4 0%,#6f86e8 45%,#4fa6ec 100%);
     -webkit-background-clip:text;background-clip:text;color:transparent;
-    filter:drop-shadow(0 0 16px rgba(90,170,255,.55));
   }
-  .sub{
-    text-align:center;color:var(--ink-dim);font-size:12px;letter-spacing:.32em;
-    margin-top:-2px;margin-bottom:26px;text-transform:uppercase;
-  }
+
   #addBtn{
     position:absolute;right:0;top:50%;transform:translateY(-50%);
-    font-family:'Orbitron',monospace;font-weight:700;font-size:12px;letter-spacing:.14em;
-    color:var(--ink);cursor:pointer;
-    padding:11px 17px;border-radius:11px;
-    border:1px solid var(--panel-brd);
-    background:linear-gradient(180deg,rgba(110,150,235,.24),rgba(80,110,190,.10));
-    box-shadow:0 0 0 1px rgba(255,255,255,.04) inset,0 4px 18px rgba(70,40,150,.35);
-    transition:.18s;
+    font-family:inherit;font-weight:800;font-size:14px;
+    color:#4c4a86;cursor:pointer;
+    padding:12px 22px;border:0;border-radius:999px;
+    background:#dcdcf7;
+    box-shadow:0 3px 0 rgba(158,158,215,.45),0 6px 14px rgba(120,130,195,.18),
+               0 1px 0 rgba(255,255,255,.9) inset;
+    letter-spacing:.02em;
+    transition:transform .12s,box-shadow .12s,filter .12s;
   }
-  #addBtn:hover{
-    border-color:var(--violet-soft);
-    background:linear-gradient(180deg,rgba(120,180,255,.40),rgba(90,120,205,.20));
-    box-shadow:0 0 22px rgba(90,170,255,.45);transform:translateY(-50%) translateY(-1px);
-  }
+  #addBtn:hover{transform:translateY(-50%) translateY(-2px);filter:brightness(1.03);box-shadow:0 5px 0 rgba(158,158,215,.45),0 10px 20px rgba(120,130,195,.22),0 1px 0 rgba(255,255,255,.9) inset}
+  #addBtn:active{transform:translateY(-50%) translateY(2px);box-shadow:0 1px 0 rgba(158,158,215,.45),0 3px 8px rgba(120,130,195,.2)}
 
-  /* ---------- column labels ---------- */
+  /* ---------------- rows ---------------- */
   .cols{
-    display:grid;grid-template-columns:52px 1fr 132px 92px;gap:14px;
-    padding:0 18px 9px;font-size:10.5px;letter-spacing:.24em;color:var(--ink-dim);
-    text-transform:uppercase;
+    display:grid;grid-template-columns:56px 1fr 130px 78px;gap:14px;
+    padding:0 20px 8px;font-size:11px;font-weight:800;letter-spacing:.18em;
+    color:var(--ink-soft);text-transform:uppercase;
   }
   .cols span:nth-child(3){text-align:right}
   .cols span:nth-child(4){text-align:center}
 
-  /* ---------- rows ---------- */
   .row{
-    display:grid;grid-template-columns:52px 1fr 132px 92px;gap:14px;align-items:center;
-    padding:15px 18px;margin-bottom:11px;border-radius:14px;
-    border:1px solid var(--panel-brd);
-    background:linear-gradient(180deg,var(--panel-bg-hi),var(--panel-bg));
-    backdrop-filter:blur(9px) saturate(115%);
-    -webkit-backdrop-filter:blur(9px) saturate(115%);
-    box-shadow:0 0 0 1px rgba(255,255,255,.05) inset,0 3px 20px rgba(4,12,40,.42);
-    animation:slideIn .32s cubic-bezier(.22,1,.36,1) backwards;
+    display:grid;grid-template-columns:56px 1fr 130px 78px;gap:14px;align-items:center;
+    padding:14px 20px;margin-bottom:12px;
+    border-radius:18px;
+    background:linear-gradient(138deg,
+      rgba(255,255,255,.86) 0%,
+      rgba(236,240,255,.68) 46%,
+      rgba(213,221,252,.60) 100%);
+    border:2px solid rgba(255,255,255,.92);
+    box-shadow:0 3px 0 rgba(163,157,214,.34),0 8px 18px rgba(90,105,175,.14);
     position:relative;
+    animation:pop .34s cubic-bezier(.2,1.3,.4,1) backwards;
   }
-  @keyframes slideIn{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
-  .row:hover{border-color:rgba(150,190,255,.72);background:linear-gradient(180deg,rgba(130,170,240,.16),rgba(96,128,210,.085))}
+  @keyframes pop{from{opacity:0;transform:translateY(12px) scale(.98)}to{opacity:1;transform:none}}
+  .row:hover{background:rgba(255,255,255,.9)}
   .row:hover .del{opacity:1}
 
   .rank{
-    font-family:'Orbitron',monospace;font-weight:700;font-size:17px;
-    color:var(--ink-dim);text-align:center;
+    width:36px;height:36px;border-radius:50%;
+    display:flex;align-items:center;justify-content:center;
+    font-weight:800;font-size:15px;color:#fff;
+    background:linear-gradient(180deg,#bcc3ea,#99a5da);
+    box-shadow:0 2px 0 rgba(115,125,180,.45);
   }
-  .row.top1 .rank{color:#ffd86b;text-shadow:0 0 12px rgba(255,200,80,.6)}
-  .row.top2 .rank{color:#d8d8ef;text-shadow:0 0 10px rgba(200,200,240,.45)}
-  .row.top3 .rank{color:#e0a173;text-shadow:0 0 10px rgba(224,150,100,.45)}
-  .row.top1{border-color:rgba(255,205,110,.42)}
+  /* first place is marked with a soft bloom, not a gold badge */
+  .row.p1 .rank{background:linear-gradient(180deg,#c4b0ef,#8ea2e9);box-shadow:0 2px 0 rgba(108,110,190,.5)}
+  .row.p1{
+    border-color:#fff;
+    background:linear-gradient(138deg,
+      rgba(255,255,255,.92) 0%,
+      rgba(233,229,255,.74) 46%,
+      rgba(214,213,250,.64) 100%);
+    box-shadow:0 3px 0 rgba(163,157,214,.34),
+               0 8px 18px rgba(90,105,175,.14);
+  }
 
-  .name{
-    font-family:'Orbitron',monospace;font-weight:500;font-size:16px;
-    letter-spacing:.05em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
-  }
+  .name{font-weight:700;font-size:17px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .score{
-    font-size:19px;text-align:right;letter-spacing:.06em;
-    color:#fff;text-shadow:0 0 10px rgba(110,190,255,.5);
+    text-align:right;font-weight:800;font-size:19px;color:var(--blue-deep);
+    font-variant-numeric:tabular-nums;letter-spacing:.01em;
   }
 
   .grade{
-    justify-self:center;min-width:66px;text-align:center;
-    font-family:'Orbitron',monospace;font-weight:900;font-size:15px;letter-spacing:.06em;
-    padding:6px 10px;border-radius:9px;
-    border:1px solid currentColor;
-    background:rgba(255,255,255,.05);
+    position:relative;overflow:hidden;
+    justify-self:center;min-width:64px;text-align:center;
+    font-family:'M PLUS Rounded 1c',sans-serif;
+    font-weight:800;font-size:14px;letter-spacing:.05em;color:#fff;
+    padding:7px 13px;border-radius:999px;
+    text-shadow:0 1px 2px rgba(60,30,80,.28);
+    box-shadow:0 2px 6px rgba(70,80,150,.22),
+               0 0 0 1px rgba(255,255,255,.42) inset;
   }
+  /* glossy top half, so the pill reads as a lozenge rather than a flat chip */
+  .grade::after{
+    content:'';position:absolute;left:0;right:0;top:0;height:52%;
+    background:linear-gradient(180deg,rgba(255,255,255,.40),rgba(255,255,255,0));
+    pointer-events:none;
+  }
+  .grade span{position:relative;z-index:1}
 
   .del{
-    position:absolute;right:-9px;top:-9px;width:22px;height:22px;border-radius:50%;
-    border:1px solid rgba(255,120,150,.55);background:#1b0f24;color:#ff8fa8;
-    font-size:13px;line-height:1;cursor:pointer;opacity:0;transition:.15s;
+    position:absolute;right:-8px;top:-8px;width:24px;height:24px;border-radius:50%;
+    border:2px solid #fff;background:#f3849c;color:#fff;font-weight:800;
+    font-size:14px;line-height:1;cursor:pointer;opacity:0;transition:.15s;
+    box-shadow:0 2px 5px rgba(120,60,90,.3);
   }
-  .del:hover{background:#37121f}
+  .del:hover{background:#e56480}
 
-  /* ---------- empty / loading ---------- */
   .msg{
-    text-align:center;color:var(--ink-dim);padding:52px 20px;font-size:13px;
-    letter-spacing:.16em;border:1px dashed var(--panel-brd);border-radius:14px;
-    background:rgba(96,84,150,.07);
+    text-align:center;color:rgba(74,80,116,.62);padding:54px 20px;font-weight:700;
+    border:1px solid rgba(120,126,170,.16);border-radius:18px;
+    background:rgba(126,132,170,.13);
   }
 
-  /* ---------- modal ---------- */
+  /* ---------------- modal ---------------- */
   .veil{
-    position:fixed;inset:0;z-index:80;display:none;
-    align-items:center;justify-content:center;padding:20px;
-    background:rgba(5,3,16,.78);backdrop-filter:blur(5px);
+    position:fixed;inset:0;z-index:80;display:none;align-items:center;justify-content:center;
+    padding:20px;background:rgba(80,88,140,.4);
   }
   .veil.on{display:flex}
   .card{
-    width:100%;max-width:400px;border-radius:16px;padding:26px;
-    border:1px solid var(--panel-brd);
-    background:linear-gradient(180deg,#0e1740,#060a1e);
-    box-shadow:0 0 48px rgba(40,110,210,.42);
-    animation:pop .24s cubic-bezier(.22,1,.36,1);
+    width:100%;max-width:380px;border-radius:24px;padding:26px;
+    background:linear-gradient(180deg,#fff,#f4f4fd);
+    border:3px solid #fff;
+    box-shadow:0 10px 0 rgba(150,144,205,.35),0 20px 44px rgba(70,85,160,.3);
+    animation:pop .26s cubic-bezier(.2,1.3,.4,1);
   }
-  @keyframes pop{from{opacity:0;transform:translateY(14px) scale(.97)}to{opacity:1;transform:none}}
   .card h2{
-    font-family:'Orbitron',monospace;font-size:16px;font-weight:700;letter-spacing:.16em;
-    margin-bottom:20px;text-align:center;color:var(--violet-soft);
+    font-size:22px;font-weight:900;text-align:center;margin-bottom:18px;
+    color:var(--blue);font-style:italic;
   }
-  label{display:block;font-size:10.5px;letter-spacing:.22em;color:var(--ink-dim);
-        margin:0 0 6px;text-transform:uppercase}
+  label{display:block;font-size:11px;font-weight:800;letter-spacing:.16em;
+        color:var(--ink-soft);margin:0 0 6px;text-transform:uppercase}
   input,select{
-    width:100%;padding:11px 13px;margin-bottom:15px;border-radius:10px;
-    border:1px solid var(--panel-brd);background:rgba(10,6,26,.85);color:var(--ink);
-    font-family:'Share Tech Mono',monospace;font-size:15px;outline:none;
+    width:100%;padding:12px 14px;margin-bottom:14px;border-radius:13px;
+    border:2px solid #ddd9f2;background:#fff;color:var(--ink);
+    font-family:inherit;font-size:16px;font-weight:700;outline:none;
   }
-  input:focus,select:focus{border-color:var(--violet-soft);box-shadow:0 0 14px rgba(130,100,255,.32)}
-  select option{background:#140e2e}
-  .hint{font-size:11px;color:var(--ink-dim);margin:-9px 0 15px;letter-spacing:.04em}
-  .btns{display:flex;gap:10px;margin-top:4px}
+  input:focus,select:focus{border-color:var(--blue)}
+  .hint{font-size:12px;color:var(--ink-soft);margin:-8px 0 14px;font-weight:500}
+  .btns{display:flex;gap:10px;margin-top:6px}
   .btns button{
-    flex:1;padding:12px;border-radius:10px;cursor:pointer;
-    font-family:'Orbitron',monospace;font-weight:700;font-size:12px;letter-spacing:.12em;
-    border:1px solid var(--panel-brd);background:rgba(96,84,150,.16);color:var(--ink);
-    transition:.16s;
+    flex:1;padding:13px;border-radius:999px;cursor:pointer;border:0;
+    font-family:inherit;font-weight:800;font-size:14px;transition:transform .12s;
   }
-  .btns .go{background:linear-gradient(180deg,rgba(150,120,255,.5),rgba(100,80,190,.3));
-            border-color:var(--violet-soft)}
-  .btns button:hover{filter:brightness(1.25)}
-  .err{color:#ff8fa8;font-size:11.5px;min-height:15px;letter-spacing:.05em;margin-bottom:8px}
+  .btns .no{background:#e6e3f4;color:var(--ink-soft);box-shadow:0 3px 0 #cdc8e4}
+  .btns .go{background:#dcdcf7;color:#4c4a86;box-shadow:0 3px 0 rgba(158,158,215,.45),0 1px 0 rgba(255,255,255,.9) inset}
+  .btns button:active{transform:translateY(2px)}
+  .err{color:#e0566f;font-size:12.5px;font-weight:700;min-height:16px;margin-bottom:6px}
 
-  @media(max-width:620px){
-    header{flex-direction:column;align-items:center;min-height:auto}
-    #addBtn{position:static;transform:none;margin-top:14px}
-    #addBtn:hover{transform:translateY(-1px)}
-    .cols,.row{grid-template-columns:36px 1fr 96px 62px;gap:9px;padding-left:12px;padding-right:12px}
-    .score{font-size:15px}.name{font-size:14px}.grade{font-size:12px;min-width:52px;padding:5px 6px}
+  @media(max-width:600px){
+    #addBtn{position:static;transform:none;margin-top:16px}
+    #addBtn:hover{transform:translateY(-2px)}
+    #addBtn:active{transform:translateY(2px)}
+    header{margin-bottom:22px;text-align:center;padding-right:0}
+    .cols,.row{grid-template-columns:40px 1fr 96px 58px;gap:10px;padding-left:13px;padding-right:13px}
+    .rank{width:30px;height:30px;font-size:14px}
+    .name{font-size:15px}.score{font-size:16px}.grade{font-size:12px;min-width:50px;padding:6px 9px}
+    h1::before{-webkit-text-stroke:3px #fff}
+    .tag{-webkit-text-stroke:2.5px #fff}
   }
 </style>
 </head>
 <body>
-<div class="horizon"></div>
+
+<div class="spark" style="top:12%;left:6%">
+  <svg width="30" height="30" viewBox="0 0 24 24" fill="#ffffff"><path d="M12 0l2.6 8.4L23 11l-8.4 2.6L12 22l-2.6-8.4L1 11l8.4-2.6z"/></svg>
+</div>
+<div class="spark" style="top:70%;right:9%">
+  <svg width="22" height="22" viewBox="0 0 24 24" fill="#ffffff"><path d="M12 0l2.6 8.4L23 11l-8.4 2.6L12 22l-2.6-8.4L1 11l8.4-2.6z"/></svg>
+</div>
+<div class="spark" style="top:34%;right:4%">
+  <svg width="16" height="16" viewBox="0 0 24 24" fill="#ffffff"><path d="M12 0l2.6 8.4L23 11l-8.4 2.6L12 22l-2.6-8.4L1 11l8.4-2.6z"/></svg>
+</div>
+
 <div class="wrap">
   <header>
-    <div>
-      <h1>LEADERBOARD</h1>
-    </div>
-    <button id="addBtn">+ NEW PLAYER</button>
+    <h1 data-text="LEADERBOARD"><span>LEADERBOARD</span></h1>
+    <div class="tag">Bing Bang Dream Adventure</div>
+    <button id="addBtn">+ New Player</button>
   </header>
-  <div class="sub">Bing Bing Rhythm War</div>
 
   <div class="cols"><span>Rank</span><span>Player</span><span>Score</span><span>Rating</span></div>
-  <div id="list"><div class="msg">LOADING…</div></div>
+  <div id="list"><div class="msg">Loading…</div></div>
 </div>
 
 <div class="veil" id="veil">
   <div class="card">
-    <h2>NEW ENTRY</h2>
+    <h2>New Entry</h2>
     <div class="err" id="err"></div>
     <label for="nick">Nickname</label>
-    <input id="nick" maxlength="18" placeholder="PLAYER1" autocomplete="off">
+    <input id="nick" maxlength="18" placeholder="player1" autocomplete="off">
     <label for="scoreIn">Score</label>
     <input id="scoreIn" inputmode="numeric" placeholder="0" autocomplete="off">
-    <div class="hint">Out of 1,000,000 — rating fills in automatically.</div>
+    <div class="hint">Out of 1,000,000 — the rating fills itself in.</div>
     <label for="gradeIn">Rating</label>
     <select id="gradeIn"></select>
     <div class="btns">
-      <button id="cancelBtn">CANCEL</button>
-      <button id="saveBtn" class="go">ADD</button>
+      <button id="cancelBtn" class="no">Cancel</button>
+      <button id="saveBtn" class="go">Add</button>
     </div>
   </div>
 </div>
@@ -250,22 +287,22 @@
 <script>
 const MAX = 1000000;
 
-// Cutoffs and colours mirror the game's own grading, so the board agrees with
-// what players see on their results screen.
+// Same cutoffs the game uses, so the board agrees with the results screen.
+// Colours are the note palette pushed darker, since these sit on white.
 const GRADES = [
-  {k:'SS+', min:0.99, a:'#ff6ac6', b:'#a06aff'},
-  {k:'SS',  min:0.98, a:'#c77dff', b:'#7aa2ff'},
-  {k:'S',   min:0.95, a:'#7aa2ff', b:'#66e8e8'},
-  {k:'A',   min:0.92, a:'#5fdcef', b:'#7ff0c0'},
-  {k:'B',   min:0.89, a:'#8fa8f0', b:'#b79cff'},
-  {k:'C',   min:0.86, a:'#b799dc', b:'#dc95d2'},
-  {k:'D',   min:0.70, a:'#e089bd', b:'#c877b8'},
-  {k:'F',   min:0.00, a:'#f05a72', b:'#cc4d85'},
+  {k:'SS+', min:0.99, c:'#e8479b', d:'#c02f7e'},
+  {k:'SS',  min:0.98, c:'#9558e2', d:'#7440be'},
+  {k:'S',   min:0.95, c:'#4f86e8', d:'#3765c4'},
+  {k:'A',   min:0.92, c:'#27aec2', d:'#178b9d'},
+  {k:'B',   min:0.89, c:'#6b8ed6', d:'#4f6fb4'},
+  {k:'C',   min:0.86, c:'#9b82c8', d:'#7c64a8'},
+  {k:'D',   min:0.70, c:'#cb7ba6', d:'#a95d85'},
+  {k:'F',   min:0.00, c:'#e0596c', d:'#bb3f52'},
 ];
-const gradeFor = s => GRADES.find(g => s / MAX >= g.min) || GRADES[GRADES.length - 1];
+const gradeFor  = s => GRADES.find(g => s / MAX >= g.min) || GRADES[GRADES.length - 1];
 const gradeMeta = k => GRADES.find(g => g.k === k) || GRADES[GRADES.length - 1];
 
-const KEY = 'rhythm-leaderboard-v1';
+const KEY = 'bbda-leaderboard-v1';
 let rows = [];
 
 const $ = id => document.getElementById(id);
@@ -277,28 +314,34 @@ GRADES.forEach(g => {
   $('gradeIn').appendChild(o);
 });
 
+// hex -> rgba so the rating pill can sit slightly translucent over the card
+const rgba = (hex, a) => {
+  const n = parseInt(hex.slice(1), 16);
+  return 'rgba(' + (n >> 16 & 255) + ',' + (n >> 8 & 255) + ',' + (n & 255) + ',' + a + ')';
+};
+
 const fmt = n => n.toString().padStart(7, '0').replace(/\B(?=(\d{3})+(?!\d))/g, "'");
 
 function render(){
   if (!rows.length){
-    listEl.innerHTML = '<div class="msg">NO SCORES YET — ADD THE FIRST ONE</div>';
+    listEl.innerHTML = '<div class="msg">No scores yet — add the first one!</div>';
     return;
   }
-  const sorted = [...rows].sort((x, y) => y.score - x.score);
+  const sorted = [...rows].sort((a, b) => b.score - a.score);
   listEl.innerHTML = '';
   sorted.forEach((r, i) => {
     const g = gradeMeta(r.grade);
     const el = document.createElement('div');
-    el.className = 'row' + (i < 3 ? ' top' + (i + 1) : '');
-    el.style.animationDelay = (i * 38) + 'ms';
+    el.className = 'row' + (i < 3 ? ' p' + (i + 1) : '');
+    el.style.animationDelay = (i * 40) + 'ms';
     el.innerHTML =
       '<div class="rank">' + (i + 1) + '</div>' +
       '<div class="name"></div>' +
       '<div class="score">' + fmt(r.score) + '</div>' +
-      '<div class="grade" style="color:' + g.a +
-        ';background:linear-gradient(135deg,' + g.a + '22,' + g.b + '22)">' + r.grade + '</div>' +
+      '<div class="grade" style="background:linear-gradient(158deg,' + rgba(g.c,.92) +
+        ',' + rgba(g.d,.86) + ')"><span>' + r.grade + '</span></div>' +
       '<button class="del" title="remove">×</button>';
-    el.querySelector('.name').textContent = r.name;   // textContent: no HTML injection
+    el.querySelector('.name').textContent = r.name;   // textContent, so odd names can't inject HTML
     el.querySelector('.del').onclick = () => remove(r.id);
     listEl.appendChild(el);
   });
@@ -309,18 +352,14 @@ async function load(){
     const res = await window.storage.get(KEY, true);
     rows = res && res.value ? JSON.parse(res.value) : [];
   } catch (e) {
-    rows = [];                       // missing key throws; that just means empty
+    rows = [];                     // a missing key throws; that just means empty
   }
   render();
 }
 
 async function save(){
-  try {
-    await window.storage.set(KEY, JSON.stringify(rows), true);
-  } catch (e) {
-    console.error('save failed', e);
-    errEl.textContent = 'COULD NOT SAVE — TRY AGAIN';
-  }
+  try { await window.storage.set(KEY, JSON.stringify(rows), true); }
+  catch (e) { console.error(e); errEl.textContent = 'Could not save — try again'; }
 }
 
 async function remove(id){
@@ -338,7 +377,6 @@ function openModal(){
 }
 const closeModal = () => veil.classList.remove('on');
 
-// keep the rating in step with the score as it is typed
 $('scoreIn').addEventListener('input', e => {
   const digits = e.target.value.replace(/[^\d]/g, '');
   e.target.value = digits;
@@ -348,10 +386,10 @@ $('scoreIn').addEventListener('input', e => {
 async function submit(){
   const name = $('nick').value.trim();
   const raw  = $('scoreIn').value.replace(/[^\d]/g, '');
-  if (!name){ errEl.textContent = 'ENTER A NICKNAME'; return; }
-  if (!raw){ errEl.textContent = 'ENTER A SCORE'; return; }
-  let score = parseInt(raw, 10);
-  if (score > MAX){ errEl.textContent = 'MAX SCORE IS 1,000,000'; return; }
+  if (!name){ errEl.textContent = 'Enter a nickname'; return; }
+  if (!raw){ errEl.textContent = 'Enter a score'; return; }
+  const score = parseInt(raw, 10);
+  if (score > MAX){ errEl.textContent = 'Max score is 1,000,000'; return; }
   rows.push({ id: Date.now() + '-' + Math.random().toString(36).slice(2, 7),
               name, score, grade: $('gradeIn').value });
   closeModal();
