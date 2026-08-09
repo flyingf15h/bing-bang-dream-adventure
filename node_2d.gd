@@ -94,6 +94,7 @@ var font_bold: FontVariation
 var font_heavy: FontVariation
 var font_thin: FontVariation
 var _vgrad_items: Array = []
+var _score_saved: bool = false
 
 
 func _ready() -> void:
@@ -297,6 +298,7 @@ func _process(delta: float) -> void:
 	ui_time += delta
 	if finished and finish_ui < 0.0:
 		finish_ui = ui_time
+		_save_result()
 	if paused or finished:
 		_tick_visuals(delta)
 		queue_redraw()
@@ -333,6 +335,84 @@ func _process(delta: float) -> void:
 	_update_notes()
 	_tick_visuals(delta)
 	queue_redraw()
+
+
+## ── Leaderboard export ──────────────────────────────────────────────────
+##
+## Every finished run appends one record to scores.json, which leaderboard.html
+## polls.  The file is written in two places: user:// always works (including
+## in exported builds), and a "public" copy sits next to the project or the
+## executable so the web page can fetch it over a local server without the
+## player hunting through the OS user-data directory.
+
+func _scores_paths() -> Array:
+	var paths: Array = ["user://scores.json"]
+	var public_dir: String = ""
+	if OS.has_feature("editor"):
+		public_dir = ProjectSettings.globalize_path("res://")
+	else:
+		public_dir = OS.get_executable_path().get_base_dir()
+	if public_dir != "":
+		paths.append(public_dir.path_join("scores.json"))
+	return paths
+
+
+func _read_score_list(path: String) -> Array:
+	if not FileAccess.file_exists(path):
+		return []
+	var f := FileAccess.open(path, FileAccess.READ)
+	if f == null:
+		return []
+	var parsed = JSON.parse_string(f.get_as_text())
+	f.close()
+	return parsed if typeof(parsed) == TYPE_ARRAY else []
+
+
+func _save_result() -> void:
+	## Guarded so a run is only ever recorded once, even though _process keeps
+	## ticking on the results screen.  _restart() clears the guard.
+	if _score_saved:
+		return
+	_score_saved = true
+
+	var g: Array = _grade()
+	var rec := {
+		"id": "%d-%04d" % [Time.get_unix_time_from_system(), randi() % 10000],
+		"song": song_title,
+		"score": score,
+		"grade": String(g[0]),
+		"pct": float(g[2]),
+		"max_combo": best_combo,
+		"perfect": int(counts["PERFECT"]),
+		"early": int(counts["EARLY"]),
+		"late": int(counts["LATE"]),
+		"miss": int(counts["MISS"]),
+		"at": Time.get_datetime_string_from_system(true),
+	}
+
+	for path in _scores_paths():
+		var list: Array = _read_score_list(path)
+		list.append(rec)
+		var f := FileAccess.open(path, FileAccess.WRITE)
+		if f == null:
+			push_warning("Could not write scores to %s" % path)
+			continue
+		f.store_string(JSON.stringify(list, "\t"))
+		f.close()
+		print("saved result to %s" % path)
+
+		# Same data as a plain script.  A page opened straight off disk cannot
+		# fetch() a sibling file -- file:// origins are opaque, so both fetch
+		# and the File System Access API are unavailable -- but a <script> tag
+		# has no such restriction, so leaderboard.html re-injects this on a
+		# timer to pick up new runs without the player doing anything.
+		var js_path: String = path.get_basename() + ".js"
+		var jf := FileAccess.open(js_path, FileAccess.WRITE)
+		if jf == null:
+			continue
+		jf.store_string("window.__scores = %s;\nwindow.__scoresAt = %d;\n"
+			% [JSON.stringify(list), Time.get_unix_time_from_system()])
+		jf.close()
 
 
 func _sync_video() -> void:
@@ -644,6 +724,7 @@ func _restart() -> void:
 	started = false
 	finished = false
 	finish_ui = -1.0
+	_score_saved = false
 	paused = false
 	song_time = -start_delay
 	score = 0

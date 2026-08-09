@@ -41,8 +41,8 @@
 
   /* ---------------- header ---------------- */
   header{
-    display:flex;flex-direction:column;align-items:center;gap:16px;
-    text-align:center;margin-bottom:36px;
+    display:flex;flex-direction:column;align-items:center;gap:12px;
+    text-align:center;margin-bottom:28px;
   }
 
   .wordmark{
@@ -51,25 +51,62 @@
            drop-shadow(0 10px 16px rgba(80,100,180,.22));
   }
 
-  .importRow{display:flex;flex-direction:column;align-items:center;gap:8px}
+  /* ---------------- player name ---------------- */
+  /* ---------------- controls ---------------- */
+  .controlBar{
+    display:flex;align-items:center;gap:9px;flex-wrap:wrap;justify-content:center;
+  }
 
-  #importBtn{
+  .nameCard{
+    display:flex;align-items:center;gap:8px;height:40px;
+    padding:0 10px 0 14px;border-radius:999px;
+    background:linear-gradient(138deg,rgba(255,255,255,.8),rgba(224,230,252,.6));
+    border:1.5px solid rgba(255,255,255,.9);
+    box-shadow:0 2px 0 rgba(163,157,214,.24),0 4px 10px rgba(90,105,175,.1);
+  }
+  .nameCard label{font-size:10px;font-weight:800;letter-spacing:.12em;
+    text-transform:uppercase;color:var(--ink-soft)}
+  #playerName{
+    font-family:inherit;font-weight:800;font-size:13px;color:var(--ink);
+    padding:5px 11px;border-radius:999px;width:126px;text-align:center;
+    border:1.5px solid rgba(163,157,214,.38);background:rgba(255,255,255,.9);
+    outline:none;transition:border-color .15s,box-shadow .15s;
+  }
+  #playerName:focus{border-color:var(--blue);box-shadow:0 0 0 2px rgba(91,141,232,.18)}
+
+  .btn{
     flex:0 0 auto;white-space:nowrap;
+    display:inline-flex;align-items:center;height:40px;
     font-family:inherit;font-weight:800;font-size:13px;
     color:#4c4a86;cursor:pointer;
-    padding:10px 20px;border:0;border-radius:999px;
+    padding:0 20px;border:0;border-radius:999px;
     background:#dcdcf7;
-    box-shadow:0 3px 0 rgba(158,158,215,.45),0 6px 14px rgba(120,130,195,.18),
+    box-shadow:0 2px 0 rgba(158,158,215,.42),0 4px 10px rgba(120,130,195,.15),
                0 1px 0 rgba(255,255,255,.9) inset;
     letter-spacing:.02em;
     transition:transform .12s,box-shadow .12s,filter .12s;
   }
-  #importBtn:hover{transform:translateY(-2px);filter:brightness(1.03);box-shadow:0 5px 0 rgba(158,158,215,.45),0 10px 20px rgba(120,130,195,.22),0 1px 0 rgba(255,255,255,.9) inset}
-  #importBtn:active{transform:translateY(2px);box-shadow:0 1px 0 rgba(158,158,215,.45),0 3px 8px rgba(120,130,195,.2)}
+  .btn:hover{transform:translateY(-2px);filter:brightness(1.03);box-shadow:0 4px 0 rgba(158,158,215,.42),0 8px 16px rgba(120,130,195,.2),0 1px 0 rgba(255,255,255,.9) inset}
+  .btn:active{transform:translateY(2px);box-shadow:0 1px 0 rgba(158,158,215,.42),0 2px 6px rgba(120,130,195,.18)}
 
-  .importStatus{font-size:12px;font-weight:700;color:var(--ink-soft);min-height:15px}
+  .importStatus{font-size:11px;font-weight:700;color:var(--ink-soft);min-height:14px}
   .importStatus.ok{color:var(--blue-deep)}
   .importStatus.err{color:#e0566f}
+
+  /* live sync indicator */
+  .live{
+    display:inline-flex;align-items:center;gap:5px;
+    font-size:9px;font-weight:800;letter-spacing:.1em;text-transform:uppercase;
+    color:var(--ink-soft);padding-right:3px;
+  }
+  .dot{width:7px;height:7px;border-radius:50%;background:#b9bdd8;
+    box-shadow:0 0 0 0 rgba(91,141,232,.5)}
+  .live.on .dot{background:#54c98b;animation:ping 1.9s infinite}
+  @keyframes ping{
+    0%{box-shadow:0 0 0 0 rgba(84,201,139,.55)}
+    70%{box-shadow:0 0 0 8px rgba(84,201,139,0)}
+    100%{box-shadow:0 0 0 0 rgba(84,201,139,0)}
+  }
 
   /* ---------------- rows ---------------- */
   .cols{
@@ -96,6 +133,12 @@
   @keyframes pop{from{opacity:0;transform:translateY(12px) scale(.98)}to{opacity:1;transform:none}}
   .row:hover{background:rgba(255,255,255,.9)}
   .row:hover .del{opacity:1}
+  /* a row that just arrived from the game gets a brief highlight */
+  .row.fresh{animation:pop .34s cubic-bezier(.2,1.3,.4,1) backwards,glow 2.4s ease-out}
+  @keyframes glow{
+    0%{box-shadow:0 3px 0 rgba(163,157,214,.34),0 0 0 4px rgba(91,141,232,.42)}
+    100%{box-shadow:0 3px 0 rgba(163,157,214,.34),0 8px 18px rgba(90,105,175,.14)}
+  }
 
   .rank{
     width:36px;height:36px;border-radius:50%;
@@ -117,7 +160,14 @@
   }
 
   .name{display:flex;flex-direction:column;gap:1px;overflow:hidden}
-  .name-main{font-weight:700;font-size:17px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .name-main{
+    font-weight:700;font-size:17px;overflow:hidden;text-overflow:ellipsis;
+    white-space:nowrap;cursor:text;border-radius:6px;padding:1px 4px;margin-left:-4px;
+    transition:background .15s;
+  }
+  .name-main:hover{background:rgba(120,130,200,.12)}
+  .name-main:focus{outline:none;background:rgba(255,255,255,.95);
+    box-shadow:0 0 0 2px rgba(91,141,232,.35)}
   .name-song{font-weight:600;font-size:11px;color:var(--ink-soft);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .score{
     text-align:right;font-weight:800;font-size:19px;color:var(--blue-deep);
@@ -155,13 +205,16 @@
     border:1px solid rgba(120,126,170,.16);border-radius:18px;
     background:rgba(126,132,170,.13);
   }
+  .msg .ok{color:var(--blue-deep)}
+  .msg .err{color:#e0566f}
 
   @media(max-width:600px){
-    header{margin-bottom:26px}
+    header{margin-bottom:22px}
     .wordmark{height:56px}
     .cols,.row{grid-template-columns:40px 1fr 96px 58px;gap:10px;padding-left:13px;padding-right:13px}
     .rank{width:30px;height:30px;font-size:14px}
     .name{font-size:15px}.score{font-size:16px}.grade{font-size:12px;min-width:50px;padding:6px 9px}
+    #playerName{width:104px}
   }
 </style>
 </head>
@@ -180,11 +233,19 @@
 <div class="wrap">
   <header>
     <img class="wordmark" src="assets/leaderboard_wordmark.png" alt="Leaderboard">
-    <div class="importRow">
-      <button id="importBtn">Import Results</button>
+
+    <div class="controlBar">
+      <div class="nameCard">
+        <label for="playerName">Player</label>
+        <input id="playerName" type="text" maxlength="18" placeholder="your name"
+               autocomplete="off" spellcheck="false">
+        <span class="live" id="live"><span class="dot"></span><span id="liveText">offline</span></span>
+      </div>
+      <button class="btn" id="watchBtn">Watch scores.json</button>
+      <button class="btn" id="importBtn">Import Once</button>
       <input id="importInput" type="file" accept="application/json,.json" hidden>
-      <span class="importStatus" id="importStatus">from leaderboard_data.json, written by the game each time you finish a song</span>
     </div>
+    <span class="importStatus" id="importStatus"></span>
   </header>
 
   <div class="cols"><span>Rank</span><span>Player</span><span>Score</span><span>Rating</span></div>
@@ -208,10 +269,34 @@ const GRADES = [
 const gradeMeta = k => GRADES.find(g => g.k === k) || GRADES[GRADES.length - 1];
 
 const KEY = 'bbda-leaderboard-v1';
+const NAME_KEY = 'bbda-player-name-v1';
 let rows = [];
+let playerName = '';
+let freshIds = new Set();
 
 const $ = id => document.getElementById(id);
 const listEl = $('list'), importStatus = $('importStatus');
+
+/* ------------------------------------------------------------------
+   Storage shim.  window.storage exists inside Claude artifacts; when this
+   page is opened from disk or served locally it is absent, so fall back to
+   localStorage.  Both are async-shaped here so callers don't care which.
+------------------------------------------------------------------ */
+const store = {
+  async get(k){
+    if (window.storage) {
+      try { const r = await window.storage.get(k, true); return r ? r.value : null; }
+      catch (e) { return null; }
+    }
+    return localStorage.getItem(k);
+  },
+  async set(k, v){
+    if (window.storage) {
+      try { await window.storage.set(k, v, true); return; } catch (e) {}
+    }
+    try { localStorage.setItem(k, v); } catch (e) { console.error(e); }
+  }
+};
 
 // hex -> rgba so the rating pill can sit slightly translucent over the card
 const rgba = (hex, a) => {
@@ -223,7 +308,10 @@ const fmt = n => n.toString().padStart(7, '0').replace(/\B(?=(\d{3})+(?!\d))/g, 
 
 function render(){
   if (!rows.length){
-    listEl.innerHTML = '<div class="msg">No scores yet — play a song, then import leaderboard_data.json</div>';
+    // The empty box carries the sync status, so there is no second line of
+    // chrome under the buttons saying the same thing.
+    listEl.innerHTML = '<div class="msg"><span id="emptyStatus"></span></div>';
+    updateStatusUI();
     return;
   }
   const sorted = [...rows].sort((a, b) => b.score - a.score);
@@ -231,36 +319,50 @@ function render(){
   sorted.forEach((r, i) => {
     const g = gradeMeta(r.grade);
     const el = document.createElement('div');
-    el.className = 'row' + (i < 3 ? ' p' + (i + 1) : '');
+    el.className = 'row' + (i < 3 ? ' p' + (i + 1) : '') + (freshIds.has(r.id) ? ' fresh' : '');
     el.style.animationDelay = (i * 40) + 'ms';
     el.innerHTML =
       '<div class="rank">' + (i + 1) + '</div>' +
-      '<div class="name"><span class="name-main"></span><span class="name-song"></span></div>' +
+      '<div class="name"><span class="name-main" contenteditable="true" spellcheck="false"></span>' +
+        '<span class="name-song"></span></div>' +
       '<div class="score">' + fmt(r.score) + '</div>' +
       '<div class="grade" style="background:linear-gradient(158deg,' + rgba(g.c,.92) +
         ',' + rgba(g.d,.86) + ')"><span>' + r.grade + '</span></div>' +
       '<button class="del" title="remove">×</button>';
+
     // textContent, so odd names/song titles can't inject HTML
-    el.querySelector('.name-main').textContent = r.name;
+    const nameEl = el.querySelector('.name-main');
+    nameEl.textContent = r.name;
+    nameEl.title = 'click to rename';
+    // Commit a rename on blur or Enter; Escape puts the old value back.
+    nameEl.addEventListener('blur', async () => {
+      const v = nameEl.textContent.trim().slice(0, 18);
+      nameEl.textContent = v || r.name;
+      if (v && v !== r.name){ r.name = v; await save(); }
+    });
+    nameEl.addEventListener('keydown', ev => {
+      if (ev.key === 'Enter'){ ev.preventDefault(); nameEl.blur(); }
+      if (ev.key === 'Escape'){ nameEl.textContent = r.name; nameEl.blur(); }
+    });
+
     el.querySelector('.name-song').textContent = r.song || '';
     el.querySelector('.del').onclick = () => remove(r.id);
     listEl.appendChild(el);
   });
+  // the highlight is a one-shot; clear it after the animation has played
+  if (freshIds.size) setTimeout(() => { freshIds.clear(); }, 2600);
 }
 
 async function load(){
-  try {
-    const res = await window.storage.get(KEY, true);
-    rows = res && res.value ? JSON.parse(res.value) : [];
-  } catch (e) {
-    rows = [];                     // a missing key throws; that just means empty
-  }
+  const raw = await store.get(KEY);
+  try { rows = raw ? JSON.parse(raw) : []; } catch (e) { rows = []; }
+  playerName = (await store.get(NAME_KEY)) || '';
+  $('playerName').value = playerName;
   render();
 }
 
 async function save(){
-  try { await window.storage.set(KEY, JSON.stringify(rows), true); }
-  catch (e) { console.error(e); setStatus('Could not save — try again', 'err'); }
+  await store.set(KEY, JSON.stringify(rows));
 }
 
 async function remove(id){
@@ -269,31 +371,183 @@ async function remove(id){
   await save();
 }
 
-// Merges entries from an imported leaderboard_data.json, skipping ones
-// already on the board (matched by id) so re-importing after another play
-// doesn't duplicate earlier rows.
+/* ------------------------------------------------------------------
+   Merge.  Records written by the game carry no player name, so each new one
+   is stamped with whatever name is in the box at the time it arrives; older
+   rows keep the name they were given. Matching on id means re-reading the
+   same scores.json never duplicates rows.
+------------------------------------------------------------------ */
 function mergeImported(list){
   const existing = new Set(rows.map(r => r.id));
   let added = 0;
   for (const rec of list){
-    if (!rec || typeof rec.score !== 'number' || !rec.name) continue;
-    const id = rec.id != null ? String(rec.id) : (rec.name + '-' + rec.score + '-' + (rec.at || ''));
+    if (!rec || typeof rec.score !== 'number') continue;
+    const id = rec.id != null
+      ? String(rec.id)
+      : (rec.name || 'anon') + '-' + rec.score + '-' + (rec.at || '');
     if (existing.has(id)) continue;
     existing.add(id);
     rows.push({
-      id, name: String(rec.name), score: Math.max(0, Math.round(rec.score)),
-      grade: String(rec.grade || 'FAIL'), song: rec.song ? String(rec.song) : '',
+      id,
+      name: String(rec.name || playerName || 'Player'),
+      score: Math.max(0, Math.round(rec.score)),
+      grade: String(rec.grade || 'FAIL'),
+      song: rec.song ? String(rec.song) : '',
     });
+    freshIds.add(id);
     added++;
   }
   return added;
 }
 
-function setStatus(text, kind){
-  importStatus.textContent = text;
-  importStatus.className = 'importStatus' + (kind ? ' ' + kind : '');
+async function handleIncoming(list, sourceLabel){
+  const added = mergeImported(list);
+  if (!added) return 0;
+  render();
+  await save();
+  setStatus('+' + added + ' new result' + (added === 1 ? '' : 's') + ' from ' + sourceLabel, 'ok');
+  return added;
 }
 
+let statusText = 'waiting for scores.json…';
+let statusKind = '';
+
+function setStatus(text, kind){
+  statusText = text;
+  statusKind = kind || '';
+  updateStatusUI();
+}
+
+// One message, two possible homes: the empty-state box while the board has
+// no rows, and the thin line under the buttons once it does.
+function updateStatusUI(){
+  const empty = !rows.length;
+  importStatus.textContent = empty ? '' : statusText;
+  importStatus.className = 'importStatus' + (statusKind ? ' ' + statusKind : '');
+  const box = document.getElementById('emptyStatus');
+  if (box){
+    box.textContent = statusText;
+    box.className = statusKind || '';
+  }
+}
+
+function setLive(on, label){
+  $('live').className = 'live' + (on ? ' on' : '');
+  $('liveText').textContent = label;
+}
+
+/* ---------------- player name ---------------- */
+$('playerName').addEventListener('input', async e => {
+  playerName = e.target.value.trim().slice(0, 18);
+  await store.set(NAME_KEY, playerName);
+});
+
+/* ------------------------------------------------------------------
+   Liveness.  Any of the three sync paths below can be the one that works,
+   so they all report in here rather than each owning the indicator.
+------------------------------------------------------------------ */
+let lastOkAt = 0;
+
+function markLive(label){
+  lastOkAt = Date.now();
+  setLive(true, label);
+}
+
+setInterval(() => {
+  if (lastOkAt && Date.now() - lastOkAt > 9000) setLive(false, 'offline');
+}, 2000);
+
+/* ------------------------------------------------------------------
+   Auto-sync, path 1: plain fetch.  Works when the page is served over a
+   local web server from the same folder as scores.json (for example
+   `python -m http.server` in the project directory).  Opened straight off
+   the filesystem this is blocked, which is what paths 2 and 3 are for.
+------------------------------------------------------------------ */
+async function pollFetch(){
+  try {
+    const res = await fetch('scores.json?t=' + Date.now(), {cache: 'no-store'});
+    if (!res.ok) throw new Error('status ' + res.status);
+    const data = await res.json();
+    markLive('live');
+    await handleIncoming(Array.isArray(data) ? data : [data], 'scores.json');
+  } catch (e) {
+    // silent: path 3 may still be carrying the load
+  }
+}
+
+/* ------------------------------------------------------------------
+   Auto-sync, path 2: script tag.  This is the one that works for a page
+   opened as file://, where fetch and the File System Access API are both
+   unavailable because the origin is opaque.  Loading a script has no such
+   restriction, so scores.js is re-injected on a timer with a cache-busting
+   query and the global it defines is read on load.
+------------------------------------------------------------------ */
+let scriptBusy = false;
+
+function pollScript(){
+  if (scriptBusy) return;
+  scriptBusy = true;
+  const s = document.createElement('script');
+  s.src = 'scores.js?t=' + Date.now();
+  s.onload = async () => {
+    s.remove();
+    scriptBusy = false;
+    if (Array.isArray(window.__scores)){
+      markLive('live');
+      await handleIncoming(window.__scores, 'scores.js');
+    }
+  };
+  s.onerror = () => { s.remove(); scriptBusy = false; };
+  document.head.appendChild(s);
+}
+
+/* ------------------------------------------------------------------
+   Auto-sync, path 3: File System Access API.  Point at scores.json once and
+   the handle is re-read whenever its timestamp changes.  Chromium only, and
+   only when the page is served over http(s) -- file:// pages do not get it.
+------------------------------------------------------------------ */
+let watchHandle = null;
+let lastMod = 0;
+
+$('watchBtn').onclick = async () => {
+  if (!window.showOpenFilePicker){
+    setStatus(location.protocol === 'file:'
+      ? 'File watching is unavailable on file:// pages — the game also writes scores.js, which this page picks up automatically, so you should not need this button'
+      : 'This browser has no file watching — use Import Once instead', 'err');
+    return;
+  }
+  try {
+    const [handle] = await window.showOpenFilePicker({
+      types: [{description: 'Scores', accept: {'application/json': ['.json']}}],
+      multiple: false,
+    });
+    watchHandle = handle;
+    lastMod = 0;
+    markLive('watching');
+    setStatus('Watching ' + handle.name + ' — new results appear automatically', 'ok');
+    pollWatch();
+  } catch (e) {
+    // the picker throws when dismissed; nothing to report
+  }
+};
+
+async function pollWatch(){
+  if (!watchHandle) return;
+  try {
+    const file = await watchHandle.getFile();
+    markLive('watching');
+    if (file.lastModified !== lastMod){
+      lastMod = file.lastModified;
+      const data = JSON.parse(await file.text());
+      await handleIncoming(Array.isArray(data) ? data : [data], watchHandle.name);
+    }
+  } catch (e) {
+    setStatus('Lost access to that file — press Watch scores.json again', 'err');
+    watchHandle = null;
+  }
+}
+
+/* ---------------- manual import, unchanged fallback ---------------- */
 $('importBtn').onclick = () => $('importInput').click();
 
 $('importInput').addEventListener('change', async e => {
@@ -305,17 +559,21 @@ $('importInput').addEventListener('change', async e => {
     const data = JSON.parse(await file.text());
     list = Array.isArray(data) ? data : [data];
   } catch (err){
-    setStatus('Could not read that file — pick leaderboard_data.json from the game folder', 'err');
+    setStatus('Could not read that file — pick scores.json from the game folder', 'err');
     return;
   }
-  const added = mergeImported(list);
-  render();
-  await save();
-  setStatus(added ? 'Imported ' + added + ' new result' + (added === 1 ? '' : 's')
-                  : 'No new results in that file', 'ok');
+  const added = await handleIncoming(list, file.name);
+  if (!added) setStatus('No new results in that file', 'ok');
 });
 
-load();
+/* ---------------- start ---------------- */
+load().then(() => {
+  pollFetch();
+  pollScript();
+  setInterval(pollFetch, 3000);
+  setInterval(pollScript, 3000);
+  setInterval(pollWatch, 2000);
+});
 </script>
 </body>
 </html>
