@@ -882,11 +882,25 @@ class GravityTracker:
     def ready(self) -> bool:
         return self.up is not None
 
-    def update(self, accel_g: np.ndarray, gyro_dps: np.ndarray,
-               dt: float) -> np.ndarray | None:
-        accel = np.asarray(accel_g, dtype=float)
-        gyro = np.asarray(gyro_dps, dtype=float)
-        magnitude = float(np.linalg.norm(accel))
+    def update(self, accel_g, gyro_dps, dt: float):
+        # Scalars throughout, and numpy only at the boundary.
+        #
+        # This runs on every sample, which at 400 Hz is 400 times a second on
+        # the same thread that has to keep reading the serial port. numpy's
+        # cost on a three-element vector is almost entirely per-call overhead
+        # -- a few microseconds to dispatch, to do arithmetic that is six
+        # multiplies -- so a dozen numpy calls here is a large fraction of the
+        # 2.5 ms budget for no arithmetic worth speaking of.
+        #
+        # Measured: the whole per-sample path cost 0.46 ms of a 2.5 ms budget,
+        # a fifth of a core, and the symptom was not slowness. It was that the
+        # reader could not keep ahead of the port whenever the game wanted the
+        # CPU, so samples queued in the driver and arrived in bursts hundreds
+        # of milliseconds late -- which looks exactly like flicks being ignored.
+        ax, ay, az = float(accel_g[0]), float(accel_g[1]), float(accel_g[2])
+        gx, gy, gz = float(gyro_dps[0]), float(gyro_dps[1]), float(gyro_dps[2])
+        magnitude = math.sqrt(ax * ax + ay * ay + az * az)
+        rate = math.sqrt(gx * gx + gy * gy + gz * gz)
 
         if self.up is None:
             # Only start from a reading that looks like gravity and nothing
@@ -894,17 +908,23 @@ class GravityTracker:
             # a vertical that is off by however hard it was being swung, and
             # tau seconds is a long time to be wrong for.
             if abs(magnitude - 1.0) < self.accel_tolerance_g and \
-                    float(np.linalg.norm(gyro)) < self.gyro_tolerance_dps:
-                self.up = accel / magnitude
+                    rate < self.gyro_tolerance_dps:
+                self.up = (ax / magnitude, ay / magnitude, az / magnitude)
                 self.trust = 1.0
             return self.up
 
+        ux, uy, uz = self.up
         if dt > 0.0:
-            omega = np.radians(gyro)
-            self.up = self.up - np.cross(omega, self.up) * dt
-            norm = float(np.linalg.norm(self.up))
+            # du/dt = -w x u, written out. A direction fixed in the world turns
+            # the opposite way to the board it is expressed in.
+            wx, wy, wz = (math.radians(gx) * dt, math.radians(gy) * dt,
+                          math.radians(gz) * dt)
+            ux, uy, uz = (ux - (wy * uz - wz * uy),
+                          uy - (wz * ux - wx * uz),
+                          uz - (wx * uy - wy * ux))
+            norm = math.sqrt(ux * ux + uy * uy + uz * uz)
             if norm > 1e-9:
-                self.up = self.up / norm
+                ux, uy, uz = ux / norm, uy / norm, uz / norm
 
         # Two Gaussian gates rather than hard cut-offs, so the reference eases
         # back rather than snapping the moment a movement ends -- a step in the
@@ -912,15 +932,18 @@ class GravityTracker:
         # direction reported after it.
         if magnitude > 1e-6:
             level = math.exp(-((magnitude - 1.0) / self.accel_tolerance_g) ** 2)
-            still = math.exp(-(float(np.linalg.norm(gyro))
-                               / self.gyro_tolerance_dps) ** 2)
+            still = math.exp(-(rate / self.gyro_tolerance_dps) ** 2)
             self.trust = level * still
             gain = min(1.0, dt / max(1e-6, self.tau)) * self.trust
             if gain > 0.0:
-                self.up = self.up + gain * (accel / magnitude - self.up)
-                norm = float(np.linalg.norm(self.up))
+                ux += gain * (ax / magnitude - ux)
+                uy += gain * (ay / magnitude - uy)
+                uz += gain * (az / magnitude - uz)
+                norm = math.sqrt(ux * ux + uy * uy + uz * uz)
                 if norm > 1e-9:
-                    self.up = self.up / norm
+                    ux, uy, uz = ux / norm, uy / norm, uz / norm
+
+        self.up = (ux, uy, uz)
         return self.up
 
 
@@ -973,6 +996,18 @@ class Flick:
     bearing_deg: float = float("nan")
     #: The frame the bearing was read in, for anything wanting to show it.
     frame: FlickFrame | None = None
+    #: Which way was up, in board axes, when the flick started -- the vertical
+    #: ``frame`` was levelled against.
+    #:
+    #: Carried so that a flick can be re-read against a *different* front axis
+    #: afterwards. That is the difference between a tool that can say "these
+    #: flicks are inconsistent" and one that can say "they are consistent, and
+    #: the front axis is -Y" -- and only the second is any use, because a wrong
+    #: front axis is the single most common reason for a board that looks like
+    #: it cannot aim. Without this the vertical is gone by the time anyone asks,
+    #: and every candidate would have to be judged in the board's own frame,
+    #: which is the thing being corrected for.
+    up_at_onset: tuple[float, float, float] | None = None
     #: Samples the stroke was integrated over. Small numbers mean the sample
     #: rate is too low for the direction to be trusted.
     samples: int = 0
@@ -1168,9 +1203,12 @@ class FlickDetector:
         #: increment can be added in a frame that is not itself moving.
         self._to_onset = np.eye(3)
         self._onset_frame: FlickFrame | None = None
+        self._onset_up: tuple | None = None
         self._samples = 0
         self._decaying = 0
         self._reversed = False
+        #: The last levelled frame and the vertical it was built from.
+        self._frame_cache: tuple | None = None
 
         #: Why the last completed movement was refused, or None if the last one
         #: was accepted. Read it after :meth:`update` returns None; callers
@@ -1179,6 +1217,11 @@ class FlickDetector:
         #: Bumped for every rejection, so a caller can tell "a new one" from
         #: "the same one still sitting there" without comparing fields.
         self.rejections = 0
+
+    #: How long a *refused* movement holds the detector off, in ms. Short: long
+    #: enough that a movement being refused repeatedly cannot re-trigger on
+    #: every sample, and far too short to reach into the flick that follows.
+    REFUSED_REARM_MS = 25.0
 
     def reset(self) -> None:
         self._active = False
@@ -1191,25 +1234,47 @@ class FlickDetector:
         self._rotation = np.zeros(3)
         self._to_onset = np.eye(3)
         self._onset_frame = None
+        self._onset_up = None
         self._samples = 0
         self._decaying = 0
         self._reversed = False
+        self._frame_cache = None
         self.gravity.reset()
 
     # ------------------------------------------------------------------
     def live_frame(self) -> FlickFrame | None:
         """The frame to read this flick's bearing in, levelled if it can be.
 
-        Built once per flick, at its start, rather than held as a constant:
-        the whole point of levelling is that the answer depends on how the
-        board is being held *now*, and a frame computed once at start-up would
-        be exactly the fixed board frame it is meant to replace.
+        Built when the flick starts rather than held as a constant: the whole
+        point of levelling is that the answer depends on how the board is being
+        held *now*, and a frame computed once at start-up would be exactly the
+        fixed board frame it is meant to replace.
+
+        Cached against the vertical it was built from, because callers ask for
+        this far more often than it changes. The live arrow wants it on every
+        sample -- 400 times a second -- while the thing it depends on is how
+        somebody is holding a board, which moves over seconds. Rebuilding it
+        each time cost more than the whole rest of the per-sample path.
         """
         if self.frame is None:
             return None
         if not self.level_with_gravity or not self.gravity.ready:
             return self.frame
-        return levelled_frame(self.frame.front, self.gravity.up, self.frame.up)
+        up = self.gravity.up
+        cached = self._frame_cache
+        if cached is not None:
+            was, frame = cached
+            # A thousandth on each axis is a fifteenth of a degree of tilt, far
+            # below anything that changes which lane a flick lands in, and it
+            # holds the cache through the small corrections the tracker makes
+            # while a board is being held still.
+            if (abs(was[0] - up[0]) < 1e-3 and abs(was[1] - up[1]) < 1e-3
+                    and abs(was[2] - up[2]) < 1e-3):
+                return frame
+        frame = levelled_frame(self.frame.front, np.asarray(up, dtype=float),
+                               self.frame.up)
+        self._frame_cache = (up, frame)
+        return frame
 
     def _refuse(self, t: float, reason: str, duration_ms: float,
                 value: float, limit: float,
@@ -1228,6 +1293,16 @@ class FlickDetector:
         refused on is worse than quoting none: it sends whoever is reading it
         to tune the wrong thing.
         """
+        # Give the refractory back. Nothing was scored, so there is no return
+        # stroke owed to anything -- and a refusal is most often a fragment of
+        # a movement still in progress, which means the full refractory would
+        # be spent blinding the detector to the rest of that very movement. The
+        # player would flick, be refused on the first 10 ms of it, and see the
+        # remaining 100 ms ignored. A short guard is still kept so a movement
+        # that is genuinely being refused over and over cannot spin.
+        self._last_emit_t = t - max(
+            0.0, self.refractory_ms - self.REFUSED_REARM_MS) / 1000.0
+
         bearing = float("nan")
         vector = self._peak_vector if turn is None else turn
         reference = frame if frame is not None else self._onset_frame
@@ -1280,6 +1355,7 @@ class FlickDetector:
                 self._rotation = np.zeros(3)
                 self._to_onset = np.eye(3)
                 self._onset_frame = self.live_frame()
+                self._onset_up = self.gravity.up
                 self._samples = 0
                 self._decaying = 0
                 self._reversed = False
@@ -1324,7 +1400,15 @@ class FlickDetector:
         #     stroke starting and is unambiguous;
         #   * the old test, still here as the backstop for a movement that
         #     simply peters out.
-        reversal = (self._samples > 2
+        # A reversal only means something once there is a stroke to reverse
+        # against. Judged on the accumulated turn rather than on a sample count:
+        # at 400 Hz three samples is 7 ms, which on the rising edge of a flick
+        # is a direction made mostly of noise, and one unlucky sign flip there
+        # ends the event after 10 ms -- too short to be a flick, so it is
+        # refused, and the refusal lands in the middle of the movement the
+        # player was actually making. Two degrees of turn is well below any
+        # real flick and far above anything noise can accumulate.
+        reversal = (float(np.linalg.norm(self._rotation)) > 2.0
                     and float(np.dot(gyro, self._rotation)) < 0.0)
         if reversal:
             self._reversed = True
@@ -1343,6 +1427,12 @@ class FlickDetector:
             return None
 
         self._active = False
+        # The refractory starts here and is shortened again by every refusal
+        # below. It exists to swallow the return stroke of a flick that
+        # *counted*, and charging a refused movement the same 200 ms is how a
+        # single stray blip blinds the detector right through the flick that
+        # follows it -- which looks, from the outside, exactly like the board
+        # ignoring a perfectly good flick. See :meth:`_refuse`.
         self._last_emit_t = t
 
         if duration_ms < self.min_duration_ms or duration_ms > self.max_duration_ms:
@@ -1419,6 +1509,7 @@ class FlickDetector:
             rotation_deg=rotation_deg,
             bearing_deg=bearing,
             frame=frame,
+            up_at_onset=self._onset_up,
             samples=self._samples,
         )
 

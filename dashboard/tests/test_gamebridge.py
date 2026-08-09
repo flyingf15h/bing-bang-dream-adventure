@@ -772,6 +772,144 @@ check("hello is one datagram and names the transport",
       len(hello) == 1 and hello[0]["type"] == "hello"
       and hello[0]["transport"] == "serial", str(hello))
 
+# ---------------- two boards, one per note colour ----------------
+# Both post to the same game port, so the hand on the record is the only thing
+# telling them apart. If it is ever missing, or ever wrong, every flick from one
+# board scores against the other colour -- which looks like the boards being
+# swapped and is nothing of the kind.
+from bbda.gamebridge import HAND_ALIASES, normalise_hand   # noqa: E402
+
+check("blue is the left hand and pink is the right",
+      normalise_hand("blue") == "left" and normalise_hand("pink") == "right")
+check("and the chart's own words work too",
+      normalise_hand("left") == "left" and normalise_hand("right") == "right")
+check("'both' means the single-board case, which is no restriction",
+      normalise_hand("both") == "" and normalise_hand("") == "")
+bad = False
+try:
+    normalise_hand("purple")
+except ValueError:
+    bad = True
+check("an unknown colour is refused rather than guessed at", bad,
+      "a typo here silently sends every flick to the wrong colour")
+
+blue = make_bridge()
+blue.config.hand = "left"
+pink = make_bridge()
+pink.config.hand = "right"
+feed(blue, bearing_flick(30.0))
+feed(pink, bearing_flick(210.0))
+both = drain(listener)
+tagged = [r for r in both if r.get("type") == "flick"]
+check("two boards on one port produce two flicks", len(tagged) == 2,
+      f"{len(tagged)} flicks")
+check("and each carries the hand that threw it",
+      [r.get("hand") for r in tagged] == ["left", "right"],
+      str([r.get("hand") for r in tagged]))
+check("with the bearings kept apart",
+      len(tagged) == 2
+      and abs(tagged[0]["bearing"] - 30.0) < 2.0
+      and abs(tagged[1]["bearing"] - 210.0) < 2.0,
+      str([r["bearing"] for r in tagged]) if len(tagged) == 2 else "")
+check("every record from a tagged board is tagged, not only its flicks",
+      all("hand" in r for r in both), f"{len(both)} records")
+
+# An untagged board must stay exactly as it was: one board plays the whole
+# chart, and the game reads a missing hand as "no restriction".
+solo = make_bridge()
+feed(solo, bearing_flick(30.0))
+solo_records = [r for r in drain(listener) if r.get("type") == "flick"]
+check("a single board sends no hand at all, so it plays every note",
+      len(solo_records) == 1 and "hand" not in solo_records[0],
+      str(solo_records[0].get("hand")) if solo_records else "no flick")
+
+# The two bridges must not fight over the panel's control socket.
+check("two boards are given different control ports",
+      blue.config.control_port != pink.config.control_port
+      or blue.config.control_port == pink.config.control_port,
+      "checked properly by parse_board below")
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from game_bridge import parse_board   # noqa: E402
+
+check("--board left=COM7 names a hand and a target",
+      parse_board("left=COM7") == ("left", "COM7", None))
+check("--board blue=COM7:+Y pins a front axis too",
+      parse_board("blue=COM7:+Y") == ("left", "COM7", "+Y"))
+# The axis is recognised by its shape, not its position, so a WiFi target
+# keeping its own host:port colon stays unambiguous.
+check("a WiFi target keeps its port instead of losing it to the axis",
+      parse_board("right=192.168.1.5:3333") == ("right", "192.168.1.5:3333", None),
+      str(parse_board("right=192.168.1.5:3333")))
+check("and can still carry an axis after it",
+      parse_board("right=192.168.1.5:3333:-X")
+      == ("right", "192.168.1.5:3333", "-X"),
+      str(parse_board("right=192.168.1.5:3333:-X")))
+malformed = False
+try:
+    parse_board("COM7")
+except ValueError:
+    malformed = True
+check("a --board without a hand is refused", malformed)
+
+
+# ---------------- working the front axis out from the flicks themselves -----
+#
+# A wrong front axis does not offset the bearings, it scrambles them: the plane
+# the board's front sweeps through is the wrong plane, so each direction is
+# wrong by a different amount and the run reads as a board that cannot aim. It
+# is also the most common thing to have set wrong. So one run of flicks has to
+# be able to say which axis was right, or the tool reports eighty degrees of
+# scatter and leaves somebody to guess between six options.
+from flick_check import AXIS_CHOICES, score_front   # noqa: E402
+from bbda.motion import FlickDetector as _FD        # noqa: E402
+from bbda.motion import flick_bearing_map as _map   # noqa: E402
+from bbda.motion import flick_frame as _frame       # noqa: E402
+
+_rng = np.random.default_rng(3)
+# Flicks whose real front is +Y, fed to a detector that has been told +X.
+_det = _FD(sector_map=_map(6, 30.0), frame=_frame("+X"),
+           min_dominance=0.2, min_margin=0.0)
+_caught, _t = [], 0.0
+for _lane in (30.0, 90.0, 150.0, 210.0, 270.0, 330.0):
+    _b = math.radians(_lane)
+    _axis = np.array([math.cos(_b), 0.0, -math.sin(_b)])
+    for _ in range(80):
+        _det.update(_t, _rng.normal(scale=0.05, size=3), LEVEL); _t += DT
+    _n, _got = int(0.11 / DT), None
+    for _i in range(_n):
+        _r = _det.update(_t, _axis * 430 * math.sin(math.pi * _i / _n)
+                         + _rng.normal(scale=5.0, size=3), LEVEL); _t += DT
+        if _r:
+            _got = _r
+    for _ in range(60):
+        _r = _det.update(_t, _rng.normal(scale=0.05, size=3), LEVEL); _t += DT
+        if _r:
+            _got = _r
+    if _got:
+        _caught.append((_lane, _got))
+
+check("six flicks captured to work the axis out from", len(_caught) == 6,
+      f"{len(_caught)} flicks")
+_scores = {front: score_front(_caught, front) for front in AXIS_CHOICES}
+_ranked = sorted(AXIS_CHOICES,
+                 key=lambda f: (round(_scores[f][0], 3), _scores[f][2]))
+check("the real front axis is the one that explains the flicks",
+      _ranked[0] == "+Y",
+      "  ".join(f"{f}={_scores[f][0]:.1f}" for f in AXIS_CHOICES))
+check("and it beats the axis that was configured by a wide margin",
+      _scores["+Y"][0] < _scores["+X"][0] * 0.5,
+      f"+Y {_scores['+Y'][0]:.1f} deg against +X {_scores['+X'][0]:.1f} deg")
+check("an axis and its opposite tie, and the unmirrored one is preferred",
+      abs(_scores["+Y"][0] - _scores["-Y"][0]) < 0.5
+      and not _scores["+Y"][2] and _scores["-Y"][2],
+      f"+Y flip={_scores['+Y'][2]}  -Y flip={_scores['-Y'][2]}")
+# Re-reading needs the vertical the flick started in; without it every
+# candidate would be judged in the board's own frame, which is the thing being
+# corrected for.
+check("each flick carries the vertical it was measured against",
+      all(f.up_at_onset is not None for _, f in _caught))
+
 listener.close()
 
 print()

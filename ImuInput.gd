@@ -274,6 +274,40 @@ func _handle_datagram(text: String) -> void:
 			link_changed.emit(false)
 
 
+## Which note colour each board plays, keyed by the hand the bridge named.
+##
+## Two boards post to the same port, so a record's `hand` field is the only
+## thing separating them. Kept per hand rather than as a single "last flick"
+## because with two boards those readouts describe different devices: one board
+## can be flicking away while the other is unplugged, and a panel averaging the
+## two would show a healthy link for a hand that is not working at all.
+var per_hand: Dictionary = {}
+
+
+## The hands the bridge has actually reported, in the order they first spoke.
+## Empty with one untagged board, which is what a single-board setup is.
+var hands: Array[String] = []
+
+
+func _note_hand(record: Dictionary) -> String:
+	var hand := String(record.get("hand", ""))
+	if hand == "":
+		return ""
+	if not per_hand.has(hand):
+		per_hand[hand] = {"flicks": 0, "refused": 0, "bearing": NAN,
+			"connected": true, "last_seen_ms": 0}
+		hands.append(hand)
+		hands.sort()
+	per_hand[hand]["last_seen_ms"] = Time.get_ticks_msec()
+	return hand
+
+
+## True when two boards are in play, so anything showing per-board state knows
+## to show two of everything rather than one.
+func two_handed() -> bool:
+	return hands.size() > 1
+
+
 func _handle_flick(record: Dictionary) -> void:
 	if not record.has("bearing"):
 		return
@@ -287,6 +321,7 @@ func _handle_flick(record: Dictionary) -> void:
 			_dropped += seq - _last_seq - 1
 		_last_seq = maxi(_last_seq, seq)
 
+	var hand := _note_hand(record)
 	var bearing := float(record["bearing"])
 	var strength := clampf(float(record.get("strength", 1.0)), 0.0, 1.0)
 
@@ -299,10 +334,16 @@ func _handle_flick(record: Dictionary) -> void:
 	last_bearing_deg = bearing
 	last_strength = strength
 	last_lag_ms = lag
+	if hand != "":
+		per_hand[hand]["flicks"] = int(per_hand[hand]["flicks"]) + 1
+		per_hand[hand]["bearing"] = bearing
 
 	if not capture_only:
-		TapInputBus.report_direction("imu", game_angle_of(bearing),
-			strength, lag)
+		# The aim correction is per board: two boards are two mountings held in
+		# two hands, and a single offset fitted against one of them is wrong for
+		# the other by however differently it happens to sit.
+		TapInputBus.report_direction("imu", game_angle_of(bearing, hand),
+			strength, lag, hand)
 	# Emitted either way, and after the bus on purpose: the panel measuring the
 	# board listens here, and gameplay's own judgement of a flick has to have
 	# run before anything reacts to it.
@@ -381,15 +422,15 @@ static func bearing_to_game_angle(bearing_deg: float) -> float:
 ## rotation followed by the reflection, and the check solves for the offset
 ## *after* deciding whether to flip, so undoing it any other way would apply an
 ## offset that was never measured.
-func corrected_bearing(raw_deg: float) -> float:
-	var bearing: float = -raw_deg if ImuSettings.bearing_flip else raw_deg
-	return fposmod(bearing + ImuSettings.bearing_offset_deg, 360.0)
+func corrected_bearing(raw_deg: float, hand: String = "") -> float:
+	var bearing: float = -raw_deg if ImuSettings.aim_flip(hand) else raw_deg
+	return fposmod(bearing + ImuSettings.aim_offset(hand), 360.0)
 
 
 ## A reported bearing turned into the angle the game draws and scores in, with
-## the aim correction applied. The one to call from gameplay.
-func game_angle_of(raw_bearing_deg: float) -> float:
-	return bearing_to_game_angle(corrected_bearing(raw_bearing_deg))
+## that board's aim correction applied. The one to call from gameplay.
+func game_angle_of(raw_bearing_deg: float, hand: String = "") -> float:
+	return bearing_to_game_angle(corrected_bearing(raw_bearing_deg, hand))
 
 
 ## Datagrams the sequence numbers say went missing. Non-zero over WiFi is

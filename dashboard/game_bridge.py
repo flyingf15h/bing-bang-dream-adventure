@@ -6,6 +6,22 @@
     python game_bridge.py --list                # what serial ports exist
     python game_bridge.py --demo                # no board: fake flicks
 
+Two boards, one per note colour:
+
+    python game_bridge.py --board left=COM7 --board right=COM9
+    python game_bridge.py --board blue=COM7:+Y --board pink=COM9:-X
+    python game_bridge.py --two-boards          # find both, left is the first
+
+The blue notes are the left hand and the pink ones are the right, which is what
+the charts already call them. A board given a hand may only hit notes of that
+colour; notes marked `any`, and the gold bonus notes, are open to either. One
+board with no hand named plays everything, exactly as before.
+
+Both boards run in this one process and post to the same game port, because
+the game has one input path and one set of detection tuning, and splitting
+either would mean keeping two copies of the part hardest to keep in step. Each
+board keeps its own detector, its own front axis and its own control port.
+
 Leave it running alongside the game. It prints a line per flick with -v, which
 is the quickest way to tell whether a flick that did not register was missed by
 the detector or lost between here and the game.
@@ -25,8 +41,36 @@ from bbda.gamebridge import (
     DEFAULT_GAME_PORT,
     BridgeConfig,
     GameBridge,
+    find_all_board_ports,
     make_link,
+    normalise_hand,
 )
+
+#: An axis name, as it may be tacked onto a --board target.
+AXIS_NAMES = ("+X", "-X", "+Y", "-Y", "+Z", "-Z")
+
+
+def parse_board(text: str) -> tuple[str, str, str | None]:
+    """``left=COM7`` or ``blue=192.168.1.5:+Y`` -> (hand, target, front).
+
+    The front axis is optional and is recognised by its shape rather than by
+    its position, so that a WiFi target keeping its own ``host:port`` colon
+    stays unambiguous: only a trailing piece that is literally one of the six
+    axis names is taken as the axis, and anything else belongs to the target.
+    """
+    hand_text, separator, target = text.partition("=")
+    if not separator:
+        raise ValueError(
+            f"--board wants hand=target, for example left=COM7; got {text!r}")
+    hand = normalise_hand(hand_text)
+    front = None
+    head, colon, tail = target.rpartition(":")
+    if colon and tail.upper() in AXIS_NAMES:
+        front = tail.upper()
+        target = head
+    if not target:
+        raise ValueError(f"--board {text!r} names no port or address")
+    return hand, target, front
 
 
 def list_ports() -> int:
@@ -181,6 +225,117 @@ def simulate_flicks(bridge: GameBridge, config: BridgeConfig,
         index += 1
 
 
+#: What each hand plays, for saying out loud. The notes are blue and pink on
+#: screen and left and right in the charts, and somebody reading this line is
+#: looking at the screen.
+COLOUR_WORDS = {"left": "the blue notes", "right": "the pink notes",
+                "": "every note"}
+
+
+def split_host(target: str) -> tuple[str, int]:
+    """``192.168.1.5:3333`` -> (host, port), with the board's default port."""
+    if ":" in target:
+        head, _, tail = target.rpartition(":")
+        try:
+            return head, int(tail)
+        except ValueError:
+            pass
+    return target, 3333
+
+
+def plan_boards(args, parser) -> list[tuple[str, str, str | None, str | None, int]]:
+    """Work out which boards to open, as (hand, target, front, host, udp_port).
+
+    Three ways in, and they are mutually exclusive because mixing them can only
+    express something one of them already says more clearly:
+    ``--board`` names each board and its colour, ``--two-boards`` finds two and
+    assigns them in the order the system lists them, and the original
+    ``--port`` / ``--host`` / nothing-at-all opens one board that plays
+    everything.
+    """
+    if args.board:
+        planned = []
+        for text in args.board:
+            try:
+                hand, target, front = parse_board(text)
+            except ValueError as exc:
+                parser.error(str(exc))
+            # A dotted address or an explicit port is WiFi; anything else is a
+            # serial port name, which differs enough by platform (COM7,
+            # /dev/ttyACM0, /dev/cu.usbmodem…) that sniffing it is hopeless.
+            is_host = target.count(".") >= 3 or target.startswith("[")
+            host, udp_port = split_host(target) if is_host else (None, 3333)
+            planned.append((hand, host or target, front, host, udp_port))
+        hands = [hand for hand, *_ in planned]
+        if len(set(hands)) != len(hands):
+            parser.error("two --board entries name the same hand; one board "
+                         "plays the blue notes and one plays the pink")
+        return planned
+
+    if args.two_boards:
+        found = find_all_board_ports()
+        if len(found) < 2:
+            parser.error(
+                f"--two-boards needs two boards and found {len(found)}"
+                + (f" ({found[0]})" if found else "")
+                + ". `--list` shows every port; on an ESP32-S3 a port only "
+                  "appears once its sketch is running, so a board that is "
+                  "mid-reset or on a power-only cable will not be there. "
+                  "`--board left=COM7 --board right=COM9` names them outright.")
+        # First listed gets the blue notes. Arbitrary, and said out loud when
+        # the boards are announced, because the alternative is the player
+        # discovering it by having every note score against the wrong colour.
+        return [("left", found[0], None, None, 3333),
+                ("right", found[1], None, None, 3333)]
+
+    host, udp_port = (split_host(args.host) if args.host else (None, 3333))
+    if host:
+        return [("", host, None, host, udp_port)]
+    if args.port:
+        return [("", args.port, None, None, 3333)]
+    return [("", "", None, None, 3333)]     # empty target: find it
+
+
+def connect(bridge: GameBridge, args, target: str, host: str | None,
+            udp_port: int) -> bool:
+    """Open one board, retrying rather than giving up on it.
+
+    A board that is mid-reset has no serial port for a second or two, and
+    exiting then means the bridge has to be started by hand at exactly the
+    right moment -- the one thing a background helper should never ask of
+    anybody.
+    """
+    attempt = 0
+    while True:
+        try:
+            link, opened = make_link(port=target or None, host=host,
+                                     baud=args.baud, udp_port=udp_port)
+        except RuntimeError as exc:
+            if attempt == 0:
+                print(f"        {exc}")
+        else:
+            if bridge.open(link, opened):
+                if attempt:
+                    print(f"        connected after {attempt} retries")
+                return True
+        attempt += 1
+        if attempt == 1:
+            print("        not open yet -- retrying, Ctrl-C to give up.")
+            if not host:
+                print("        * `--list` shows which ports exist.")
+                print("        * A port that exists but will not open is "
+                      "usually held by another program -- the dashboard, or "
+                      "a serial monitor.")
+            else:
+                print("        * `wifi status` on the board over USB prints "
+                      "its IP.")
+        try:
+            time.sleep(2.0)
+        except KeyboardInterrupt:
+            print("\nStopping.")
+            return False
+
+
 def main() -> int:
     # Python block-buffers stdout when it is not a terminal, which for this
     # tool defeats the point: the usual way to keep a record of a session is
@@ -209,6 +364,14 @@ def main() -> int:
     stock_rate = BridgeConfig().rate_hz
 
     parser.add_argument("--list", action="store_true", help="list serial ports and exit")
+    transport.add_argument(
+        "--board", action="append", metavar="HAND=TARGET[:FRONT]", default=[],
+        help="a board and the note colour it plays, repeatable: "
+             "left=COM7 (blue notes), right=COM9 (pink), "
+             "blue=192.168.1.5:+Y to pin a front axis or use WiFi")
+    transport.add_argument(
+        "--two-boards", action="store_true",
+        help="find two boards on USB and give the first the blue notes")
     parser.add_argument("--demo", action="store_true",
                         help="send fake flicks without a board, to test the game")
     parser.add_argument("--simulate-flicks", action="store_true",
@@ -268,103 +431,86 @@ def main() -> int:
     if args.list:
         return list_ports()
 
-    config = BridgeConfig(
-        game_host=args.game_host,
-        game_port=args.game_port,
-        control_port=(args.control_port if args.control_port is not None
-                      else args.game_port + 1),
-        rate_hz=args.rate,
-        calibrated=not args.raw,
-        on_threshold_dps=args.threshold,
-        min_swing=args.swing,
-        min_margin=args.margin,
-        refractory_ms=args.refractory,
-        sectors=args.sectors,
-        sector_offset_deg=args.sector_offset,
-        front=args.front,
-        motion_hz=args.motion_hz,
-        verbose=not args.quiet,
-    )
-    bridge = GameBridge(config)
+    boards = plan_boards(args, parser)
+
+    stock = BridgeConfig()
+
+    def build(hand: str, front: str, index: int) -> BridgeConfig:
+        """Detection tuning is shared; the board-specific parts are not.
+
+        Thresholds, margins and the sector layout describe what a flick *is*,
+        which is the same question whichever hand threw it -- so both boards
+        get the flags as given. The front axis and the hand describe this
+        particular board, and the control port has to differ or the second
+        bridge silently fails to bind and its half of the panel does nothing.
+        """
+        return BridgeConfig(
+            game_host=args.game_host,
+            game_port=args.game_port,
+            control_port=base_control + index,
+            rate_hz=args.rate,
+            calibrated=not args.raw,
+            on_threshold_dps=args.threshold,
+            min_swing=args.swing,
+            min_margin=args.margin,
+            refractory_ms=args.refractory,
+            sectors=args.sectors,
+            sector_offset_deg=args.sector_offset,
+            front=front,
+            hand=hand,
+            motion_hz=args.motion_hz,
+            verbose=not args.quiet,
+        )
+
+    base_control = (args.control_port if args.control_port is not None
+                    else args.game_port + 1)
 
     if args.demo:
-        return run_demo(bridge, config)
+        return run_demo(GameBridge(build("", args.front, 0)), stock)
 
-    udp_port = 3333
-    host = args.host
-    if host and ":" in host:
-        host, _, port_text = host.rpartition(":")
-        try:
-            udp_port = int(port_text)
-        except ValueError:
-            host = args.host
-
-    try:
-        link, target = make_link(
-            port=args.port, host=host, baud=args.baud, udp_port=udp_port
-        )
-    except RuntimeError as exc:
-        print(f"error: {exc}", file=sys.stderr)
-        return 1
-
-    kind = "WiFi" if args.host else "USB serial"
-    print(f"Board:  {target}  ({kind})")
-    print(f"Game:   {config.game_host}:{config.game_port}")
-    if not args.port and not args.host:
-        print("        (auto-detected; --port overrides, --list shows all)")
-    print("Ctrl-C to stop.\n")
-
-    # Retry the first connection rather than giving up on it. A board that is
-    # mid-reset has no serial port for a second or two, and exiting then means
-    # the bridge has to be started by hand at exactly the right moment -- the
-    # one thing a background helper should never ask of anybody.
-    attempt = 0
-    while not bridge.open(link, target):
-        attempt += 1
-        if attempt == 1:
-            print("Could not open the board yet -- retrying, Ctrl-C to give up.")
-            if not args.host:
-                print("  * `--list` shows which ports exist.")
-                print("  * A port that exists but will not open is usually "
-                      "held by another program -- the dashboard, or a serial "
-                      "monitor.")
-            else:
-                print("  * `wifi status` on the board over USB prints its IP.")
-        try:
-            time.sleep(2.0)
-            link, target = make_link(
-                port=args.port, host=host, baud=args.baud, udp_port=udp_port
-            )
-        except RuntimeError:
-            continue        # the port has not come back yet
-        except KeyboardInterrupt:
-            print("\nStopping.")
+    print(f"Game:   {args.game_host}:{args.game_port}")
+    running: list[GameBridge] = []
+    for index, (hand, target, front, host, udp_port) in enumerate(boards):
+        config = build(hand, front or args.front, index)
+        bridge = GameBridge(config)
+        kind = "WiFi" if host else "USB serial"
+        plays = COLOUR_WORDS.get(hand, "every note")
+        print(f"Board:  {target:<22} ({kind})  plays {plays}"
+              + (f"  front {config.front}" if len(boards) > 1 else ""))
+        bridge.reconnect_target = (host, udp_port)
+        if not connect(bridge, args, target, host, udp_port):
             return 1
-    if attempt:
-        print(f"Connected on {target} after {attempt} retries.\n")
-
-    bridge.open_control()
+        bridge.open_control()
+        running.append(bridge)
+    print("Ctrl-C to stop.\n")
 
     stop_simulator = threading.Event()
     if args.simulate_flicks:
         print("Simulating a flick into each lane in turn, alongside the board.")
         print("Real flicks still count; only the live arrow is taken over.\n")
         threading.Thread(target=simulate_flicks,
-                         args=(bridge, config, stop_simulator),
+                         args=(running[0], running[0].config, stop_simulator),
                          daemon=True).start()
 
     try:
-        _serve(bridge, args, host, udp_port)
+        _serve(running, args)
     except KeyboardInterrupt:
         print("\nStopping.")
     finally:
         stop_simulator.set()
-        bridge.close()
+        for bridge in running:
+            bridge.close()
     return 0
 
 
-def _serve(bridge: GameBridge, args, host: str | None, udp_port: int) -> None:
-    """Keep the board's stream flowing into the game until interrupted.
+def _label(bridge: GameBridge) -> str:
+    """How to name one board in a log line shared by two of them."""
+    hand = bridge.config.hand
+    return "link" if not hand else ("blue" if hand == "left" else "pink")
+
+
+def _serve(bridges: list[GameBridge], args) -> None:
+    """Keep every board's stream flowing into the game until interrupted.
 
     Reconnects rather than exiting, because on a board with native USB the
     serial port is provided by the running sketch: reset the board and the
@@ -372,100 +518,113 @@ def _serve(bridge: GameBridge, args, host: str | None, udp_port: int) -> None:
     under a different COM number. That is not a failure, it is what a reset
     looks like from here -- and a game input device that has to be restarted
     by hand every time the board is power-cycled is not one anybody would use.
-    So a serial reconnect re-runs the search rather than reopening the name it
-    had before.
+
+    With two boards the reconnect is per board and the other one keeps
+    playing. That is the whole reason this loop is not simply run twice in two
+    processes: one board going away must not stop the other, and the player
+    should be told which colour has stopped working rather than that "the
+    board" has.
     """
     last_report = time.monotonic()
     last_monitor = last_report
-    quiet_since: float | None = None
+    quiet_since: dict[int, float] = {}
+    down_since: dict[int, float] = {}
+    said_down: dict[int, float] = {}
 
     while True:
         # Short enough that the in-game panel feels connected to what it is
         # editing: this is how often a slider being dragged is acted on, and a
         # half-second lag there reads as the control having no effect.
         time.sleep(0.05)
-        bridge.poll_control()
-        bridge.expire_bias_write()
+        for bridge in bridges:
+            bridge.poll_control()
+            bridge.expire_bias_write()
         now = time.monotonic()
 
-        if args.monitor and bridge.connected and now - last_monitor >= 0.5:
+        if args.monitor and now - last_monitor >= 0.5:
             last_monitor = now
-            threshold = bridge.config.on_threshold_dps
-            peak = bridge.peak_dps_seen
-            bridge.peak_dps_seen = 0.0
-            transport = bridge.peak_transport_ms
-            bridge.peak_transport_ms = 0.0
-            bar = "#" * min(40, int(40.0 * peak / max(threshold * 2.0, 1.0)))
-            verdict = "over" if peak >= threshold else "under"
-            # Transport delay alongside the rate, because they are the two
-            # halves of "did that flick register properly": whether it was
-            # strong enough to be seen at all, and how stale it was by the time
-            # it was. A board can be perfectly detectable and still arrive too
-            # late to score, and nothing else in this tool would say so.
-            print(f"  |gyro| peak {peak:7.1f} dps  {verdict:<5} "
-                  f"{threshold:.0f}  |{bar:<40}|  wire {transport:5.1f} ms")
+            for bridge in bridges:
+                if not bridge.connected:
+                    continue
+                threshold = bridge.config.on_threshold_dps
+                peak = bridge.peak_dps_seen
+                bridge.peak_dps_seen = 0.0
+                transport = bridge.peak_transport_ms
+                bridge.peak_transport_ms = 0.0
+                bar = "#" * min(40, int(40.0 * peak / max(threshold * 2.0, 1.0)))
+                verdict = "over" if peak >= threshold else "under"
+                # Transport delay alongside the rate, because they are the two
+                # halves of "did that flick register properly": whether it was
+                # strong enough to be seen at all, and how stale it was by the
+                # time it was. A board can be perfectly detectable and still
+                # arrive too late to score, and nothing else here would say so.
+                print(f"  [{_label(bridge)}] |gyro| peak {peak:7.1f} dps  "
+                      f"{verdict:<5} {threshold:.0f}  |{bar:<40}|  "
+                      f"wire {transport:5.1f} ms")
 
-        if not bridge.connected:
-            print("[link] board gone -- looking for it again")
-            print("       NOTHING YOU DO WITH THE BOARD WILL REGISTER until "
-                  "it is back.")
-            # Repeated rather than said once. The wait is open-ended, and with
-            # --simulate-flicks scrolling past it, a single line an hour ago is
-            # exactly how someone ends up flicking at a board that is not
-            # plugged in and concluding that flick detection is broken.
-            waiting_since = now
-            said = now
-            while True:
-                # Polled while waiting too: the panel is the most likely place
-                # someone is watching from when the board has gone away, and a
-                # panel whose controls stop responding looks like a second
-                # fault on top of the first.
-                for _ in range(20):
-                    time.sleep(0.1)
-                    bridge.poll_control()
-                if time.monotonic() - said >= 10.0:
-                    said = time.monotonic()
-                    print(f"[link] still no board after "
-                          f"{said - waiting_since:.0f}s. On an ESP32-S3 the "
-                          f"port is provided by the running sketch, so a reset "
-                          f"or a power-only cable makes it vanish like this.")
-                try:
-                    link, target = make_link(
-                        port=args.port, host=host, baud=args.baud,
-                        udp_port=udp_port,
-                    )
-                except RuntimeError:
-                    continue        # not back yet; the port has not returned
-                if bridge.open(link, target):
-                    print(f"[link] reconnected on {target}")
-                    quiet_since = None
-                    break
-            continue
+        # Reconnect whatever has gone away, without blocking the boards that
+        # have not. The old loop sat inside a `while True` here and waited, so
+        # a second board would have gone unread -- and unread over WiFi means
+        # its datagrams pile up and it comes back seconds behind.
+        for index, bridge in enumerate(bridges):
+            if bridge.connected:
+                if index in down_since:
+                    del down_since[index]
+                continue
+            plays = COLOUR_WORDS.get(bridge.config.hand, "every note")
+            if index not in down_since:
+                down_since[index] = now
+                said_down[index] = now
+                print(f"[{_label(bridge)}] board gone -- looking for it again")
+                print(f"       NOTHING YOU DO WITH IT WILL REGISTER until it "
+                      f"is back, and it plays {plays}.")
+            elif now - said_down[index] >= 10.0:
+                # Repeated rather than said once. The wait is open-ended, and a
+                # single line a minute ago is exactly how someone ends up
+                # flicking at a board that is not plugged in and concluding
+                # that flick detection is broken.
+                said_down[index] = now
+                print(f"[{_label(bridge)}] still no board after "
+                      f"{now - down_since[index]:.0f}s. On an ESP32-S3 the "
+                      f"port is provided by the running sketch, so a reset or "
+                      f"a power-only cable makes it vanish like this.")
+            host, udp_port = bridge.reconnect_target
+            try:
+                link, target = make_link(port=None if host else bridge.target,
+                                         host=host, baud=args.baud,
+                                         udp_port=udp_port)
+            except RuntimeError:
+                continue        # not back yet; the port has not returned
+            if bridge.open(link, target):
+                print(f"[{_label(bridge)}] reconnected on {target}")
+                quiet_since.pop(index, None)
 
         if now - last_report < 5.0:
             continue
         last_report = now
-        print(
-            f"[link] {bridge.sample_rate:.0f} Hz  "
-            f"{bridge.samples} samples  {bridge.flicks} flicks"
-        )
+        for index, bridge in enumerate(bridges):
+            if not bridge.connected:
+                continue
+            print(f"[{_label(bridge)}] {bridge.sample_rate:.0f} Hz  "
+                  f"{bridge.samples} samples  {bridge.flicks} flicks"
+                  + (f"  {bridge.refused} refused" if bridge.refused else ""))
 
-        # An open port that delivers nothing is its own failure, and a
-        # different one from a port that will not open. Say so rather than
-        # printing a reassuring 0 Hz for ever.
-        if bridge.sample_rate >= 1.0:
-            quiet_since = None
-            continue
-        if quiet_since is None:
-            quiet_since = now
-        elif now - quiet_since >= 10.0:
-            quiet_since = now
-            print("       the link is open but no samples are arriving.")
-            print("       * `mode csv` may have been turned off -- the "
-                  "dashboard sends `mode pretty` when it disconnects.")
-            print("       * over WiFi the board streams to whoever spoke to "
-                  "it last; the dashboard may have taken it over.")
-            print("       See docs/GAME_INPUT.md for the rest.")
+            # An open port that delivers nothing is its own failure, and a
+            # different one from a port that will not open. Say so rather than
+            # printing a reassuring 0 Hz for ever.
+            if bridge.sample_rate >= 1.0:
+                quiet_since.pop(index, None)
+                continue
+            if index not in quiet_since:
+                quiet_since[index] = now
+            elif now - quiet_since[index] >= 10.0:
+                quiet_since[index] = now
+                print("       the link is open but no samples are arriving.")
+                print("       * `mode csv` may have been turned off -- the "
+                      "dashboard sends `mode pretty` when it disconnects.")
+                print("       * over WiFi the board streams to whoever spoke "
+                      "to it last; the dashboard may have taken it over.")
+                print("       See docs/GAME_INPUT.md for the rest.")
 
 
 if __name__ == "__main__":

@@ -79,6 +79,36 @@ python game_bridge.py --demo                # no board: fake flicks, to test the
 python game_bridge.py --simulate-flicks     # real board, faked flicks, hands free
 ```
 
+**Two boards, one per note colour.** The blue notes are the left hand and the
+pink ones are the right, which is what the charts already call them. Notes
+marked `any`, and the gold bonus notes, are open to either.
+
+```bash
+python game_bridge.py --board left=COM7 --board right=COM9
+python game_bridge.py --board blue=COM7:+Y --board pink=COM9:-X   # per-board axis
+python game_bridge.py --two-boards          # find both; the first gets blue
+```
+
+Both boards run in one process and post to the same game port: the game has one
+input path and one set of hit windows, and splitting those would mean keeping
+two copies of the part that most needs a single source of truth. Each board
+keeps its own port, front axis, control port and **aim correction** — two boards
+are two mountings in two hands, and a correction fitted against one is wrong for
+the other. Run the debug panel's direction check once with each board in hand.
+
+**Checking that flicks go where you aim them**
+
+```bash
+python flick_check.py watch     # a dial that follows the board, live
+python flick_check.py aim       # flick each lane, get an error table
+```
+
+`watch` is the fastest check there is and needs no patience: swing the board up
+and the marker goes to the middle. `aim` separates the constant offset (a
+mounting angle, one number, already corrected by the direction check) from the
+spread left after removing it — which is the real directional accuracy, and the
+only one of the two worth comparing against a target.
+
 An arrow in the middle of the ring shows where the board is being swung and how
 hard, so a flick that does not land says which of the two reasons it was. `I`
 hides it. Colour means the flick hit a note; everything else is grey.
@@ -155,6 +185,35 @@ the four numbers below were large enough to be the whole problem.
 | Direction error, board rolled 25° in the hand | 25° | **≤1.1°** |
 | Stream rate | 200 Hz, gyro ODR 200 Hz | **400 Hz, gyro ODR 800 Hz** |
 | Gyro noise at rest (400 Hz, calibrated) | — | 0.055 dps sigma per axis |
+| Bridge cost per sample | 0.46 ms (20% of a core) | **0.18 ms (4.2%)** |
+| Arrival delay, median, with the game running | 2.5 ms | **2.4 ms** |
+| Arrival delay, p90, with the game running | 14.7 ms | **4.8 ms** |
+| Arrival delay, p99, with the game running | 256 ms | **~5 ms** |
+
+The last row is the one worth reading twice. With the game running, arrival
+delay was a solid 2.5 ms punctuated by bursts into the hundreds of
+milliseconds, and the sample rate never dropped — nothing was being lost, it was
+arriving late in clumps. The cause was not the transport: a bare reader on the
+same loaded machine peaked at 8.5 ms. It was that detection runs synchronously
+inside the serial read loop, so 0.46 ms of per-sample work against a 2.5 ms
+budget left no margin, and whenever the game wanted the CPU the reader fell
+behind and drained in a burst.
+
+Almost all of that 0.46 ms was numpy call overhead on three-element vectors —
+microseconds of dispatch around six multiplies, dozens of times per sample, 400
+times a second. The per-sample path is now scalar arithmetic, the levelled frame
+is cached against the vertical it was built from instead of being rebuilt for
+every arrow update, and the sample-rate window pops from a deque instead of
+rebuilding a 400-element list. numpy is still used everywhere it earns its keep;
+it is simply the wrong tool for a 3-vector in a hot loop.
+
+The reader thread is also asked for ABOVE_NORMAL priority on Windows, which is
+what closed the remaining gap: it does nothing but block on a read, so letting
+it run first costs the rest of the system almost nothing, and it was losing the
+CPU to a game rendering flat out. Rare outliers of a few tens of milliseconds
+remain on a loaded machine — but they are now *measured*, and each flick's
+`lag_ms` carries its own sample's transport delay, so a late sample is backdated
+correctly instead of quietly scoring against a moment that had already passed.
 
 The arrival delay was the host reading the serial port with `read(4096)`
 against a 0.2 s timeout, so it waited out the timeout every time and then

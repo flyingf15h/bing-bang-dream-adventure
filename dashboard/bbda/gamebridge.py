@@ -77,8 +77,10 @@ Nothing is ever scored from one; ``detail`` is a sentence meant to be shown.
 from __future__ import annotations
 
 import json
+import math
 import socket
 import time
+from collections import deque
 from dataclasses import dataclass
 from typing import Optional
 
@@ -235,6 +237,19 @@ class BridgeConfig:
     sectors: int = 6
     sector_offset_deg: float = 30.0
     front: str = "+X"
+    #: Which hand this board plays, and so which notes its flicks may hit:
+    #: ``"left"`` for the blue ones, ``"right"`` for the pink, ``""`` for a
+    #: single board that plays everything.
+    #:
+    #: Carried on every record rather than inferred from which socket it came
+    #: down, because both boards post to the same port -- the game has one
+    #: listener and one input path, and giving each board its own would
+    #: duplicate the half of this that is hardest to keep in step. It is a
+    #: property of how the board is being held, so it is set when the bridge is
+    #: started and is deliberately not something the game can change: a board
+    #: that swapped hands mid-song would be indistinguishable from one that had
+    #: started scoring the wrong colour.
+    hand: str = ""
     #: Peak rate mapped to strength 1.0. A hard hand flick peaks near 700 dps.
     strength_ceiling_dps: float = 700.0
 
@@ -272,6 +287,13 @@ class GameBridge:
         self._link: Optional[Link] = None
         #: What the link was opened against, for repeating hello later.
         self._target = ""
+        #: How to find this board again if it goes away: ``(host, udp port)``
+        #: over WiFi, ``(None, port)`` over serial. Held per bridge rather than
+        #: worked out by whoever is reconnecting, because with two boards there
+        #: is no longer one answer -- one may be on a cable and the other on
+        #: the network, and reopening the wrong one silently gives both hands
+        #: to the same board.
+        self.reconnect_target: tuple[Optional[str], int] = (None, 3333)
         self._seq = 0
         self.samples = 0
         self.flicks = 0
@@ -290,7 +312,7 @@ class GameBridge:
         self.peak_transport_ms = 0.0
         self._clock_floor: float | None = None
         self._clock_floor_t = 0.0
-        self._rate_window: list[float] = []
+        self._rate_window: deque[float] = deque()
         self._started_at = time.monotonic()
         self._last_status = 0.0
         #: Strongest swing seen since the last motion record, and the bearing
@@ -758,10 +780,26 @@ class GameBridge:
         link.send("cal show")
 
         self.link_up = True
+        # Forget how the two clocks lined up last time. The board's microsecond
+        # counter restarts from nothing when it reboots, and a reboot is the
+        # usual reason this is being called again -- so the offset between the
+        # board's clock and the host's jumps by however long the board had been
+        # up. Kept, the old floor would make every sample of the new session
+        # look hours late, and every flick would be backdated by that much and
+        # score against a moment long gone.
+        self._clock_floor = None
+        self._clock_floor_t = 0.0
+        self.last_transport_ms = 0.0
+        self.peak_transport_ms = 0.0
         self.detector.reset()
         self.send_hello(link.kind, target)
         self.send_config()
         return True
+
+    @property
+    def target(self) -> str:
+        """What this bridge last opened -- a port name, or a host over WiFi."""
+        return self._target
 
     @property
     def connected(self) -> bool:
@@ -778,6 +816,13 @@ class GameBridge:
     # Outgoing
     # ------------------------------------------------------------------
     def _emit(self, payload: dict) -> None:
+        # The hand goes on everything this bridge sends, not just on flicks.
+        # Two bridges share one port, so without it the game cannot tell which
+        # board a refusal, a status or a live motion record came from -- and
+        # "one of your two boards has stopped" is not a useful thing to be
+        # told. Never overwritten, so a payload that names its own hand wins.
+        if self.config.hand:
+            payload = {"hand": self.config.hand, **payload}
         payload = {"v": WIRE_VERSION, **payload}
         try:
             self._socket.sendto(
@@ -803,14 +848,25 @@ class GameBridge:
         })
 
     def _note_motion(self, gyro) -> None:
-        """Fold one sample into the next motion record."""
+        """Fold one sample into the next motion record.
+
+        Scalar arithmetic, and the bearing computed only when it is going to be
+        used. This runs on every sample purely to feed a 30 Hz arrow, so it has
+        no business being the most expensive thing on the reader thread -- and
+        with a numpy cross product, a numpy norm and a rebuilt frame per call,
+        it was.
+        """
         # The levelled frame, the same one a flick would be judged in. The
         # arrow and the flick have to agree about which way is up or the arrow
         # stops being a way of aiming: it would point where the board thinks
         # the movement went while the score came from where gravity says it
         # did, and the player would learn to aim by an arrow that lies.
         frame = self.detector.live_frame() or self.detector.frame
-        swing = float((frame.sweep(gyro) ** 2).sum() ** 0.5)
+        gx, gy, gz = float(gyro[0]), float(gyro[1]), float(gyro[2])
+        fx, fy, fz = frame.front
+        # sweep = gyro x front, the velocity of the board's front.
+        sx, sy, sz = (gy * fz - gz * fy, gz * fx - gx * fz, gx * fy - gy * fx)
+        swing = math.sqrt(sx * sx + sy * sy + sz * sz)
         if swing > self._motion_swing:
             self._motion_swing = swing
             # Only re-read the bearing when the swing grew. A bearing taken
@@ -818,7 +874,9 @@ class GameBridge:
             # letting that overwrite the direction of a real movement is what
             # would make the arrow jitter while the hand is steady.
             self._motion_bearing = float(frame.bearing_deg(gyro))
-        self._motion_dps = max(self._motion_dps, float((gyro ** 2).sum() ** 0.5))
+        rate = math.sqrt(gx * gx + gy * gy + gz * gz)
+        if rate > self._motion_dps:
+            self._motion_dps = rate
 
     def _maybe_send_motion(self, device_t: float) -> None:
         """Send a motion record if one is due on the *board's* clock.
@@ -940,10 +998,15 @@ class GameBridge:
         self.peak_dps_seen = max(self.peak_dps_seen, rate)
         self.last_dps = rate
 
+        # A deque popped from the front, not a list rebuilt by comprehension.
+        # Once the window is full the old form rebuilt a 400-element list on
+        # *every* sample, which is 160 000 list operations a second to answer
+        # "how many samples in the last second" -- a question that only needs
+        # the stale ones dropped.
         self._rate_window.append(now)
-        if self._rate_window and now - self._rate_window[0] > 1.0:
-            cutoff = now - 1.0
-            self._rate_window = [t for t in self._rate_window if t >= cutoff]
+        cutoff = now - 1.0
+        while self._rate_window and self._rate_window[0] < cutoff:
+            self._rate_window.popleft()
 
         # The detector is driven by the *device* clock. Host arrival times
         # carry USB and WiFi scheduling jitter, and a duration measured
@@ -1282,6 +1345,44 @@ def find_board_port() -> Optional[str]:
         if any(k in text for k in ("esp32", "espressif", "usb serial", "cdc")):
             return port.device
     return None
+
+
+#: What the two note colours are called, in every spelling somebody might type.
+#: The game's charts say "left" and "right"; the notes on screen are blue and
+#: pink, and that is what a person looking at them will call them.
+HAND_ALIASES = {
+    "left": "left", "blue": "left", "l": "left",
+    "right": "right", "pink": "right", "r": "right",
+    "both": "", "any": "", "": "",
+}
+
+
+def normalise_hand(name: str) -> str:
+    """Turn any spelling of a note colour into the chart's own word.
+
+    Raises rather than guessing: a typo here silently sends every flick to the
+    wrong colour, which looks like the board being broken.
+    """
+    key = str(name).strip().lower()
+    if key not in HAND_ALIASES:
+        raise ValueError(
+            f"unknown hand {name!r} -- use left/blue, right/pink, or both")
+    return HAND_ALIASES[key]
+
+
+def find_all_board_ports() -> list[str]:
+    """Every serial port that looks like one of these boards, best first."""
+    from serial.tools import list_ports
+
+    ports = list(list_ports.comports())
+    exact = [p.device for p in ports if p.vid == ESPRESSIF_VID]
+    loose = [
+        p.device for p in ports
+        if p.vid != ESPRESSIF_VID
+        and any(k in f"{p.description} {p.manufacturer or ''}".lower()
+                for k in ("esp32", "espressif", "usb serial", "cdc"))
+    ]
+    return exact + loose
 
 
 def make_link(port: str | None = None, host: str | None = None,

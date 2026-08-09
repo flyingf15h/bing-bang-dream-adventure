@@ -62,6 +62,11 @@ var _check_step: int = -1
 var _check_samples: Array = []
 var _check_offset: float = 0.0
 var _check_flip: bool = false
+## Which board threw the flicks being checked. The correction is per board --
+## two boards are two mountings -- so a check run with the pink one in hand must
+## not overwrite what was measured for the blue one. Set from the first flick of
+## the run, and empty for a single untagged board.
+var _check_hand: String = ""
 var _check_prompt: Label
 var _check_result: Label
 var _check_apply: Button
@@ -354,7 +359,7 @@ func _build_direction_check(column: VBoxContainer) -> void:
 	_check_apply.text = "apply this correction"
 	_check_apply.visible = false
 	_check_apply.pressed.connect(func() -> void:
-		ImuSettings.set_aim(_check_offset, _check_flip)
+		ImuSettings.set_aim(_check_offset, _check_flip, _check_hand)
 		_check_apply.visible = false
 		_check_result.text = ("applied. Run the check again to confirm it now "
 			+ "reads straight."))
@@ -394,6 +399,15 @@ func _end_check(why: String) -> void:
 
 func _on_check_flick(record: Dictionary) -> void:
 	if _check_step < 0 or not record.has("bearing"):
+		return
+	var flick_hand := String(record.get("hand", ""))
+	if _check_samples.is_empty():
+		_check_hand = flick_hand
+	elif flick_hand != _check_hand:
+		# Both boards are live and the other one was flicked. Ignoring it is the
+		# only safe answer: a run mixing two mountings solves for a correction
+		# that is wrong for both, and it would look like a board that cannot aim
+		# rather than like two boards being used at once.
 		return
 	_check_samples.append({
 		"name": String(LEARN_DIRECTIONS[_check_step][0]),
@@ -875,14 +889,29 @@ func _refresh_readouts() -> void:
 	_set_row("hit_rate", "%d hit   %d hit nothing" % [_lane_hits, _lane_misses],
 		Color(1, 1, 1, 0.7))
 
-	if not ImuSettings.aim_corrected():
+	# One line per board. With two of them the corrections are different
+	# numbers for different mountings, and showing only one would be showing an
+	# adjustment that half the flicks on screen are not getting.
+	var aim_hands: Array = ImuInput.hands if ImuInput.two_handed() else [""]
+	var aim_parts: PackedStringArray = []
+	for aim_hand in aim_hands:
+		var prefix: String = ""
+		if aim_hand != "":
+			prefix = ("blue " if String(aim_hand) == "left" else "pink ")
+		if not ImuSettings.aim_corrected(aim_hand):
+			aim_parts.append(prefix + "none")
+		else:
+			var turn: float = rad_to_deg(angle_difference(
+				0.0, deg_to_rad(ImuSettings.aim_offset(aim_hand))))
+			aim_parts.append("%s%s%+.0f deg" % [prefix,
+				"mirrored, " if ImuSettings.aim_flip(aim_hand) else "", turn])
+	var any_correction: bool = false
+	for aim_hand in aim_hands:
+		any_correction = any_correction or ImuSettings.aim_corrected(aim_hand)
+	if not any_correction:
 		_set_row("aim", "none -- bearings used as reported", Color(1, 1, 1, 0.5))
 	else:
-		var turn: float = rad_to_deg(angle_difference(
-			0.0, deg_to_rad(ImuSettings.bearing_offset_deg)))
-		_set_row("aim", "%s%+.0f deg" % [
-			"mirrored, " if ImuSettings.bearing_flip else "", turn],
-			Color(0.75, 0.95, 1.0))
+		_set_row("aim", "   ".join(aim_parts), Color(0.75, 0.95, 1.0))
 	if ImuInput.board_gyro_bias.size() == 3:
 		_set_row("stored_bias", "%+.3f  %+.3f  %+.3f dps" % [
 			float(ImuInput.board_gyro_bias[0]), float(ImuInput.board_gyro_bias[1]),

@@ -350,7 +350,37 @@ class SerialLink(Link):
                 pass
         self.status.emit(message, False)
 
+    @staticmethod
+    def _raise_thread_priority() -> None:
+        """Ask the OS to schedule this reader ahead of ordinary work.
+
+        This thread is the only thing draining a device that produces a sample
+        every 2.5 ms and will not wait: fall behind and the samples queue in the
+        driver, then arrive in a burst tens of milliseconds stale. It competes
+        on this machine with a game rendering as fast as it can, and at default
+        priority it loses that competition often enough to measure -- the
+        latency spikes left over after the per-sample work was made cheap were
+        exactly this.
+
+        ABOVE_NORMAL rather than anything higher: the thread does almost
+        nothing but block on a read, so it costs the rest of the system very
+        little to let it run first, while a real-time priority on a thread that
+        also parses and detects would be taking more than the problem warrants.
+        Best-effort -- a platform where this does not apply keeps working
+        exactly as before, a few milliseconds worse under load.
+        """
+        try:
+            import ctypes
+
+            kernel32 = ctypes.windll.kernel32          # Windows only
+            THREAD_PRIORITY_ABOVE_NORMAL = 1
+            kernel32.SetThreadPriority(kernel32.GetCurrentThread(),
+                                       THREAD_PRIORITY_ABOVE_NORMAL)
+        except (AttributeError, OSError, ImportError):
+            pass
+
     def _read_loop(self) -> None:
+        self._raise_thread_priority()
         while not self._stop.is_set():
             try:
                 # Take whatever has arrived, and if nothing has, block for one

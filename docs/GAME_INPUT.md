@@ -602,7 +602,38 @@ is visible in about four seconds this way, where the same fault seen only
 through flicks landing in odd lanes looks like bad luck for as long as you are
 willing to keep flicking.
 
-`aim` separates the two kinds of wrong, and that separation is the point:
+`aim` uses **the front axis the game is set to**, read out of Godot's own
+settings file, not a default of its own. That distinction cost a whole
+measurement session once: run against the wrong front axis, the bearings are not
+merely offset but scrambled — the plane the board's front sweeps through is the
+wrong plane, so every direction is wrong by a different amount — and the run
+comes back reporting eighty degrees of scatter and a confident diagnosis of
+"mirrored", every word of which is about the flag rather than the board.
+
+So `aim` now answers "which axis is the front" from the same flicks, before
+anything else:
+
+```
+  front axis      accuracy   flicks it could read
+  --------------------------------------------------
+  +Y                1.4 deg   6 of 6  <- fits best
+  -Y                1.4 deg   6 of 6  mirrored
+  +Z               29.8 deg   4 of 6
+  +X               48.0 deg   6 of 6  <- in use
+```
+
+That works because each flick carries both the whole stroke as one rotation
+*and* the vertical at the moment it started, so the bearing for any candidate
+front is a calculation rather than another six runs. An axis and its opposite
+tie exactly — one of them reflected — and the un-mirrored one wins, because a
+mirror is a correction the game would otherwise carry for ever to undo a guess
+made here.
+
+The axis in use has to be beaten by a wide margin before the tool says to change
+it: with a dozen hand-thrown flicks two axes can land close together by luck,
+and telling somebody to change a correct setting is worse than saying nothing.
+
+`aim` then separates the two kinds of wrong, and that separation is the point:
 
 * a **constant offset** — everything rotated by the same amount. This is a
   mounting angle or a wrong front axis, it is one number, and the game already
@@ -620,6 +651,71 @@ board with a 40° mounting error look hopeless while a board with no offset and
 flicks, replay it through as many settings as you like, and compare on
 identical data. A change measured against a fresh set of hand-thrown flicks is
 measured against the hand as much as against the change.
+
+---
+
+## Two boards, one per note colour
+
+The blue notes are the left hand and the pink ones are the right — that is what
+the charts already call them (`"hand": "left"` / `"right"`). Notes marked `any`,
+and the gold bonus notes, are open to either.
+
+```bash
+python game_bridge.py --board left=COM7 --board right=COM9
+python game_bridge.py --board blue=COM7:+Y --board pink=COM9:-X
+python game_bridge.py --two-boards        # find both; the first gets blue
+```
+
+Both boards run in **one** process and post to the **same** game port. The game
+has one input path, one detector tuning and one set of hit windows; splitting
+either across two processes would mean keeping two copies of the part that most
+needs a single source of truth. What each board keeps to itself is the part that
+really is per board:
+
+| per board | shared |
+|---|---|
+| serial port or IP | threshold, swing floor, margin, refractory |
+| front axis (`--board hand=target:+Y`) | commit fraction, sector layout |
+| control port (base, base+1, …) | lane tolerance, window stretch |
+| aim correction (direction check) | sample rate, calibration |
+
+Every record a tagged board sends carries `"hand"`, not just its flicks — a
+refusal, a status or a live motion record from one board has to be
+distinguishable from the other's, or "one of your two boards has stopped" is not
+something the game can say.
+
+**The aim correction is per board and has to be.** Two boards are two mountings
+held in two hands; a correction fitted against one is wrong for the other by
+however differently it happens to sit. Run the debug panel's direction check
+once with each board in hand — it records which board threw the flicks and
+stores that board's answer, and it ignores flicks from the other one mid-run
+rather than solving for a correction that fits neither.
+
+A board with no hand named plays everything, exactly as before. That is still
+the normal setup and nothing about it changed.
+
+---
+
+## When a flick is detected and scores nothing
+
+The bridge already explains the movements *it* turns down. The game now explains
+the ones it accepted and did not score, which used to be pure silence — and
+silence is indistinguishable from a board that is unplugged, a bridge that is
+not running, or a socket that would not bind. It appears wherever bridge
+refusals appear, and on the console:
+
+```
+[imu] no note for that flick: aimed 71 deg wide -- flick went to 47 deg,
+      nearest blue note is the lane at 120, and the limit is 75.
+      If every flick does this by about the same amount, run the direction check.
+[imu] no note for that flick: 214 ms late -- the direction was right,
+      the window is 308 ms.
+[imu] no note for that flick: that flick was fine -- there were no pink notes
+      left to hit
+```
+
+Those three are the whole space of answers, and they point at three different
+fixes: the direction check, the audio offset, and nothing at all.
 
 ---
 

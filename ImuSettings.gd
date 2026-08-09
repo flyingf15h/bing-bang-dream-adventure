@@ -49,7 +49,7 @@ const SAVE_PATH := "user://imu_settings.cfg"
 ## which lane a flick meant. A file written before that carries floors chosen
 ## against the old, stricter rules.
 ## 3: the leniency values were widened again. See `_migrate()`.
-const FORMAT_VERSION := 3
+const FORMAT_VERSION := 4
 
 ## The detection floors, and what version first wrote each one's current
 ## meaning. A stored value older than this is dropped rather than kept, because
@@ -204,23 +204,57 @@ func assist() -> Dictionary:
 	}
 
 
+## Per-board aim corrections, keyed by the hand the bridge named.
+##
+## `bearing_offset_deg` and `bearing_flip` above are this game's single board --
+## the "" hand -- and stay where they are so a one-board setup reads and writes
+## exactly the file it always did. A second board gets its own entry here.
+##
+## Two mountings are two different errors. The boards are held in two hands, one
+## may be a different unit with a different front axis, and a correction fitted
+## against one of them is wrong for the other by however differently it happens
+## to sit. Sharing one offset would mean the direction check could only ever be
+## right about whichever board was checked last.
+var hand_aim: Dictionary = {}
+
+
+## The aim correction in force for one board, in degrees clockwise.
+func aim_offset(hand: String = "") -> float:
+	if hand == "" or not hand_aim.has(hand):
+		return bearing_offset_deg
+	return float(hand_aim[hand].get("offset", 0.0))
+
+
+## Whether that board's bearings are mirrored before the offset.
+func aim_flip(hand: String = "") -> bool:
+	if hand == "" or not hand_aim.has(hand):
+		return bearing_flip
+	return bool(hand_aim[hand].get("flip", false))
+
+
 ## Set the aim correction the direction check worked out, and save it.
-func set_aim(offset_deg: float, flip: bool) -> void:
-	bearing_offset_deg = fposmod(offset_deg, 360.0)
-	bearing_flip = flip
+func set_aim(offset_deg: float, flip: bool, hand: String = "") -> void:
+	if hand == "":
+		bearing_offset_deg = fposmod(offset_deg, 360.0)
+		bearing_flip = flip
+	else:
+		hand_aim[hand] = {"offset": fposmod(offset_deg, 360.0), "flip": flip}
 	save_settings()
 	changed.emit()
 
 
 ## Back to no correction at all, which is also what a fresh install has.
-func clear_aim() -> void:
-	set_aim(0.0, false)
+func clear_aim(hand: String = "") -> void:
+	if hand == "":
+		hand_aim.clear()
+	set_aim(0.0, false, hand)
 
 
 ## True when a correction is in force, so a display can say so rather than
 ## leaving somebody to wonder why the raw bearing and the lane disagree.
-func aim_corrected() -> bool:
-	return bearing_flip or absf(angle_difference(0.0, deg_to_rad(bearing_offset_deg))) > 0.001
+func aim_corrected(hand: String = "") -> bool:
+	return aim_flip(hand) or absf(angle_difference(
+		0.0, deg_to_rad(aim_offset(hand)))) > 0.001
 
 
 ## Change one assist value and save. The counterpart of `set_tuning()` for the
@@ -307,25 +341,53 @@ func write_bias() -> void:
 
 
 func _send(message: Dictionary) -> void:
-	var port: int = control_port()
-	if port != _connected_port:
-		_socket.close()
-		if _socket.connect_to_host("127.0.0.1", port) != OK:
-			return
-		_connected_port = port
-	_socket.put_packet(JSON.stringify(message).to_utf8_buffer())
+	## To every bridge that has announced itself, not just to one.
+	##
+	## Two boards are two bridges on two control ports, and everything sent
+	## through here is detection tuning -- thresholds, margins, the sector
+	## layout -- which describes what a flick *is* and so has to be the same for
+	## both. Sending to one would leave the other running whatever it was
+	## started with, and the panel would be showing one board's settings while
+	## half the flicks on screen came from the other.
+	##
+	## The board-specific setting, the front axis, is the exception and is
+	## handled in `push_front_to`: it is a fact about how one board is mounted,
+	## and sending it to both is how the second board ends up being told the
+	## first one's mounting.
+	var payload := JSON.stringify(message).to_utf8_buffer()
+	for port in control_ports():
+		if port != _connected_port:
+			_socket.close()
+			if _socket.connect_to_host("127.0.0.1", port) != OK:
+				continue
+			_connected_port = port
+		_socket.put_packet(payload)
 
 
-## Where the bridge is listening. The bridge reports this in every `config`
-## record; before one has arrived, the convention holds -- one above the port
-## the game listens on, whatever that was moved to.
+## Every bridge control port the game has heard from, lowest first.
+##
+## Before any `config` record has arrived the convention holds -- one above the
+## port the game listens on, whatever that was moved to -- so a panel opened
+## before the bridge starts still reaches it.
+func control_ports() -> Array:
+	if _control_ports.is_empty():
+		return [ImuInput.port + 1]
+	var ports: Array = _control_ports.keys()
+	ports.sort()
+	return ports
+
+
+## The first bridge's control port. Kept for anything that just wants "the"
+## port to show; `control_ports()` is what sending uses.
 func control_port() -> int:
-	if applied.has("control_port"):
-		return int(applied["control_port"])
-	return ImuInput.port + 1
+	return int(control_ports()[0])
 
 
 ## --- the bridge's echo -----------------------------------------------------
+
+## Control ports seen in `config` records, as a set. One entry per board.
+var _control_ports: Dictionary = {}
+
 
 func note_bridge_config(record: Dictionary) -> void:
 	## Take what the bridge says it is running as the truth.
@@ -336,12 +398,19 @@ func note_bridge_config(record: Dictionary) -> void:
 	## detector used another is the exact confusion this whole screen exists
 	## to remove.
 	applied = record.duplicate()
+	if record.has("control_port"):
+		_control_ports[int(record["control_port"])] = true
+	# The front axis is a property of one board's mounting, so with two boards
+	# it must not be adopted from whichever of them spoke last -- that would
+	# hand the second board's mounting to the first every time it reconnected.
+	# With a single untagged board it is still adopted, exactly as before.
+	var record_hand := String(record.get("hand", ""))
 	# Note what this does *not* do: mark anything as edited. Adopting the
 	# bridge's own values must not make them look like choices the player made,
 	# or the first connection would freeze whatever flags that bridge happened
 	# to be started with into this file for ever.
 	var before := tuning()
-	if record.has("front") and String(record["front"]) in FRONT_CHOICES:
+	if record_hand == "" and record.has("front") 			and String(record["front"]) in FRONT_CHOICES:
 		front = String(record["front"])
 	on_threshold_dps = float(record.get("on_threshold_dps", on_threshold_dps))
 	min_swing = float(record.get("min_swing", min_swing))
@@ -405,6 +474,28 @@ func _migrate(stored_format: int) -> void:
 		lane_tolerance_deg = 75.0
 		timing_scale = 2.8
 		said.append("leniency")
+	if stored_format < 4:
+		## The direction check solves for one rotation, and possibly a mirror,
+		## that best explains where four thrown flicks landed. That fit is only
+		## as meaningful as the thing it was fitted against -- and what it was
+		## fitted against has changed underneath it.
+		##
+		## Directions used to be measured in the board's own axes, so a board
+		## held even slightly crooked reported every flick rotated by the angle
+		## of the grip. The check dutifully measured that and stored it. They are
+		## now measured against gravity, which is where the rotation went in the
+		## first place, so the stored correction is no longer cancelling anything
+		## -- it is the only thing left rotating the flicks.
+		##
+		## Kept would be worse than useless: it would look like a residual
+		## inaccuracy in the new detector, which is exactly the wrong place to go
+		## looking. Zeroed, the check can simply be run again, against a detector
+		## whose answers mean what they say.
+		bearing_offset_deg = 0.0
+		bearing_flip = false
+		hand_aim.clear()
+		edited.erase("bearing_offset_deg")
+		said.append("aim correction")
 	print("[imu] %s reset to the current defaults -- the saved values were "
 		% " and ".join(said)
 		+ "chosen against a stricter build. Everything else in the file is "
@@ -428,6 +519,7 @@ func save_settings() -> void:
 		file.set_value("assist", key, assist()[key])
 	file.set_value("aim", "bearing_offset_deg", bearing_offset_deg)
 	file.set_value("aim", "bearing_flip", bearing_flip)
+	file.set_value("aim", "hand_aim", hand_aim)
 	file.save(SAVE_PATH)
 
 
@@ -455,6 +547,7 @@ func _read_from(file: ConfigFile) -> void:
 	})
 	bearing_offset_deg = fposmod(float(file.get_value("aim", "bearing_offset_deg", bearing_offset_deg)), 360.0)
 	bearing_flip = bool(file.get_value("aim", "bearing_flip", bearing_flip))
+	hand_aim = file.get_value("aim", "hand_aim", {})
 
 
 ## Where the saved file really is, for showing a human. user:// is a real

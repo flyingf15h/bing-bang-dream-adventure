@@ -446,7 +446,8 @@ func _on_imu_flick(record: Dictionary) -> void:
 	# gesture and is what scoring used; the smoothed heading is an approximation
 	# of it that lags by a frame or two. Showing the arrow anywhere but on the
 	# lane that was hit would make a correct hit look like a mis-aimed one.
-	imu_angle = ImuInput.game_angle_of(float(record["bearing"]))
+	imu_angle = ImuInput.game_angle_of(float(record["bearing"]),
+		String(record.get("hand", "")))
 	imu_flash = 1.0
 	imu_refused = 0.0
 
@@ -459,7 +460,8 @@ func _on_imu_refused(record: Dictionary) -> void:
 	## player cannot tell which they are looking at. So a refusal gets its own
 	## mark -- deliberately not the flick's, since it did not score.
 	if record.has("bearing"):
-		imu_angle = ImuInput.game_angle_of(float(record["bearing"]))
+		imu_angle = ImuInput.game_angle_of(float(record["bearing"]),
+			String(record.get("hand", "")))
 	imu_refused = 1.0
 	imu_refused_text = String(record.get("detail", ""))
 	# Whatever the last flick did, this movement scored nothing, and the
@@ -637,7 +639,26 @@ func _accept_hit(n: Dictionary, verdict: String, whole: bool = false) -> void:
 const AIM_COST_MS_PER_DEG: float = 1.5
 
 
-func _try_hit_direction(angle_deg: float, lag_ms: float) -> bool:
+## Whether a board playing `hand` is allowed to hit this note.
+##
+## An untagged input plays everything, which is one board, a mouse, or a key --
+## the arrangement this game had before there were two boards and still the
+## normal one. A tagged board reaches its own colour and the notes the chart
+## marked `any`, and nothing else: the player is holding one board in each hand,
+## and a left-hand flick landing on a pink note would be scoring a movement they
+## did not make. Bonus notes are open to either, because they are drawn in their
+## own gold and belong to neither hand.
+func _hand_may_hit(hand: String, n: Dictionary) -> bool:
+	if hand == "":
+		return true
+	if bool(n["bonus"]):
+		return true
+	var note_hand := String(n["hand"])
+	return note_hand == hand or note_hand == "any"
+
+
+func _try_hit_direction(angle_deg: float, lag_ms: float,
+		hand: String = "") -> bool:
 	## Score an input that named a direction rather than a lane -- a flick.
 	##
 	## Separate from _try_hit() rather than folded into it, because a flick is
@@ -669,13 +690,38 @@ func _try_hit_direction(angle_deg: float, lag_ms: float) -> bool:
 	var best: Dictionary = {}
 	var best_cost: float = 1e9
 	var best_err: float = 0.0
+
+	# Why nothing matched, gathered as we go. A flick that scores nothing is
+	# otherwise completely silent, and silence is the one answer a player
+	# cannot act on -- it looks identical to a flick the board never saw, to a
+	# bridge that is not running, and to a socket that would not bind. The
+	# bridge already refuses to be silent about the movements *it* turns down;
+	# this is the same courtesy for the ones it accepted and the game did not.
+	var waiting: int = 0
+	var near_aim: float = 1e9        # smallest angle to any waiting note
+	var near_aim_angle: float = 0.0
+	var near_aim_err: float = 0.0
+	var near_time: float = 1e9       # smallest |timing error| among notes in reach
+
 	for n in notes:
 		if String(n["state"]) != "wait":
 			continue
+		if not _hand_may_hit(hand, n):
+			continue
+		waiting += 1
 		var aim: float = _angle_gap(angle_deg, float(n["angle"]))
+		var err: float = (at - float(n["t"])) * 1000.0
+		# Tracked over notes that are roughly contemporary, so "you aimed 70
+		# degrees wide" is about a note that was actually due rather than about
+		# one three minutes away that happens to sit in the right lane.
+		if aim < near_aim and absf(err) <= maxf(near, 400.0):
+			near_aim = aim
+			near_aim_angle = float(n["angle"])
+			near_aim_err = err
 		if aim > tolerance:
 			continue
-		var err: float = (at - float(n["t"])) * 1000.0
+		if absf(err) < near_time:
+			near_time = absf(err)
 		if absf(err) > near:
 			continue
 		var cost: float = absf(err) + aim * AIM_COST_MS_PER_DEG
@@ -684,12 +730,62 @@ func _try_hit_direction(angle_deg: float, lag_ms: float) -> bool:
 			best_cost = cost
 			best_err = err
 	if best.is_empty():
+		_explain_no_hit(angle_deg, waiting, near_aim, near_aim_angle,
+			near_aim_err, near_time, tolerance, near, hand)
 		return false
 	var verdict: String = _judge_for(best_err, scale)
 	if verdict == "":
 		return false
 	_accept_hit(best, verdict, true)
 	return true
+
+
+## Say why a flick that the bridge accepted scored nothing here.
+##
+## The bridge's own refusals already explain themselves -- it says a movement
+## was too gentle, or was mostly a roll, and what to change. This is the other
+## half, and until now it did not exist: a flick that passed every test the
+## bridge has, arrived, and simply did not land on a note produced no output at
+## all. From the player's side that is indistinguishable from the board being
+## unplugged, and it is the state somebody is in when they say "it's pointing
+## the right way and nothing happens".
+##
+## Written through the same channel as a bridge refusal, so it appears on screen
+## in the place refusals already appear and nothing new has to be drawn. Nothing
+## is scored from it, obviously -- it exists to be read.
+func _explain_no_hit(angle_deg: float, waiting: int, near_aim: float,
+		near_aim_angle: float, near_aim_err: float, near_time: float,
+		tolerance: float, near: float, hand: String = "") -> void:
+	var colour: String = ""
+	if hand != "":
+		colour = " blue" if hand == "left" else " pink"
+	var text: String
+	if waiting == 0:
+		text = ("that flick was fine -- there were no%s notes left to hit"
+			% colour)
+	elif near_aim > tolerance:
+		# Aimed wide. The lane it should have gone to is worth naming, because
+		# "70 degrees off" is a number and "the lane at 120" is a place.
+		text = ("aimed %.0f deg wide -- flick went to %.0f deg, nearest%s note "
+			+ "is the lane at %.0f, and the limit is %.0f. If every flick does "
+			+ "this by about the same amount, run the direction check."
+			) % [near_aim, angle_deg, colour, near_aim_angle, tolerance]
+	elif near_time < 1e8:
+		var when: String = "early" if near_aim_err < 0.0 else "late"
+		text = ("%.0f ms %s -- the direction was right, the window is %.0f ms. "
+			+ "If flicks feel late rather than being late, the audio offset "
+			+ "keys are the fix.") % [near_time, when, near]
+	else:
+		text = ("no note was both within %.0f deg and within %.0f ms of that "
+			+ "flick") % [tolerance, near]
+
+	imu_refused = 1.0
+	imu_refused_text = text
+	imu_last_hit = false
+	# Printed as well as drawn. The on-screen line fades, and whoever is
+	# debugging this is usually reading the console beside the bridge's own
+	# output, where the two halves of the story belong together.
+	print("[imu] no note for that flick: ", text)
 
 
 func _on_tap(event: TapEvent) -> void:
@@ -709,7 +805,8 @@ func _on_tap(event: TapEvent) -> void:
 	# A flick from the IMU names its direction outright: the board is not
 	# anywhere on screen, so there is no position to read an angle from.
 	if event.has_direction():
-		var hit := _try_hit_direction(event.direction_deg, event.lag_ms)
+		var hit := _try_hit_direction(event.direction_deg, event.lag_ms,
+			event.hand)
 		TapInputBus.report_judgement(event.source, hit)
 		# Recorded here rather than in _on_imu_flick because only this knows
 		# whether a note was there. The ordering is what makes it usable:

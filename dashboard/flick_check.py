@@ -39,15 +39,18 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 import statistics
 import sys
 import time
+from pathlib import Path
 
 import numpy as np
 from PySide6.QtCore import Qt
 
 from bbda.gamebridge import BridgeConfig, GameBridge, make_link
 from bbda.link import Sample
+from bbda.motion import AXIS_VECTORS, flick_frame, levelled_frame
 
 #: The six lanes the game has, as bearings clockwise from straight up, with
 #: names somebody can act on. These are the sector centres the bridge defaults
@@ -65,6 +68,42 @@ LANES = [
 def wrap180(degrees: float) -> float:
     """An angle difference folded into -180..180."""
     return (degrees + 180.0) % 360.0 - 180.0
+
+
+#: Where Godot keeps the settings the game actually plays with. The front axis
+#: lives here because it is a fact about how one board is mounted, and it is
+#: chosen in the game's debug panel rather than on this tool's command line.
+GAME_SETTINGS = (
+    Path(os.environ.get("APPDATA", "~")).expanduser()
+    / "Godot" / "app_userdata" / "bing bing rhythm war" / "imu_settings.cfg"
+)
+
+
+def read_game_front() -> tuple[str | None, str]:
+    """The front axis the game is configured for, and where it was read from.
+
+    Defaulting this tool to ``BridgeConfig``'s ``+X`` rather than to what the
+    game is set to was a real mistake and worth naming, because the failure is
+    silent and looks like the board's fault. Measured against the wrong front
+    axis the swing plane is wrong, so the bearings are not merely offset --
+    they are scrambled, differently for each direction. The run comes back with
+    eighty degrees of scatter and a confident diagnosis of "mirrored", and
+    every word of it is about this tool's own flag.
+    """
+    try:
+        text = GAME_SETTINGS.read_text(encoding="utf-8")
+    except OSError:
+        return None, "not found"
+    for line in text.splitlines():
+        name, _, value = line.partition("=")
+        if name.strip() == "front":
+            axis = value.strip().strip('"').upper()
+            if axis in AXIS_CHOICES:
+                return axis, str(GAME_SETTINGS)
+    return None, f"{GAME_SETTINGS} (no front axis in it)"
+
+
+AXIS_CHOICES = ("+X", "-X", "+Y", "-Y", "+Z", "-Z")
 
 
 # ----------------------------------------------------------------------
@@ -209,6 +248,44 @@ def fit_offset(pairs: list[tuple[float, float]]) -> tuple[float, bool, float]:
     return best
 
 
+def bearing_for_front(flick, front: str) -> float | None:
+    """Re-read a captured flick as though this axis were the board's front.
+
+    Possible only because the flick carries both the whole stroke as one
+    rotation and the vertical at the moment it started: with those two, the
+    bearing for any candidate front is a calculation rather than another
+    handful of flicks. Twelve thrown flicks therefore answer "which axis is the
+    front" as a by-product of answering "how accurate is it", instead of
+    needing six separate runs to compare.
+    """
+    turn = getattr(flick, "rotation_vector", None)
+    if turn is None or float(np.linalg.norm(turn)) < 1e-9:
+        return None
+    base = flick_frame(front)
+    up = getattr(flick, "up_at_onset", None)
+    frame = base if up is None else levelled_frame(
+        base.front, np.asarray(up, dtype=float), base.up)
+    # A movement that barely swung this candidate's front has no direction to
+    # report against it -- the bearing of a near-zero vector is noise, and one
+    # of those will occasionally post a very low error by luck.
+    if frame.swing_fraction(turn) < 0.35:
+        return None
+    return float(frame.bearing_deg(turn))
+
+
+def score_front(pairs: list[tuple[float, object]], front: str):
+    """How well one candidate front explains a whole run: (rms, offset, flip, n)."""
+    measured = []
+    for lane, flick in pairs:
+        bearing = bearing_for_front(flick, front)
+        if bearing is not None:
+            measured.append((lane, bearing))
+    if len(measured) < 4:
+        return (float("inf"), 0.0, False, len(measured))
+    offset, flip, rms = fit_offset(measured)
+    return (rms, offset, flip, len(measured))
+
+
 def run_aim(bridge: GameBridge, found: list, rounds: int) -> int:
     import random
 
@@ -220,6 +297,7 @@ def run_aim(bridge: GameBridge, found: list, rounds: int) -> int:
 
     results: dict[float, list[float]] = {lane: [] for lane, _ in LANES}
     pairs: list[tuple[float, float]] = []
+    captured: list[tuple[float, object]] = []
     order = list(LANES)
     for round_index in range(rounds):
         random.shuffle(order)      # so the hand cannot settle into a rhythm
@@ -234,6 +312,7 @@ def run_aim(bridge: GameBridge, found: list, rounds: int) -> int:
             error = wrap180(lane - flick.bearing_deg)
             results[lane].append(flick.bearing_deg)
             pairs.append((lane, flick.bearing_deg))
+            captured.append((lane, flick))
             print(f"went {flick.bearing_deg:6.1f}deg   off by {error:+6.1f}deg"
                   f"   {flick.rotation_deg:4.0f}deg turn over {flick.samples:3d} samples")
 
@@ -259,14 +338,64 @@ def run_aim(bridge: GameBridge, found: list, rounds: int) -> int:
         print(f"  {name:<12} {lane:6.1f}  {mean_bearing:6.1f}   "
               f"{mean_error:+6.1f}    {spread:5.1f}   ({len(got)})")
 
+    # --- which axis is the front ------------------------------------
+    #
+    # Asked first, and asked of the same flicks, because every other number
+    # here is meaningless if it is wrong. A wrong front axis does not offset
+    # the bearings, it scrambles them: the plane the board's front sweeps
+    # through is the wrong plane, so each direction is wrong by a different
+    # amount, and the run comes back looking like a board that cannot aim.
+    in_use = bridge.config.front
+    # Sorted by accuracy, then by *not* needing a mirror. An axis and its
+    # opposite explain a set of planar flicks equally well -- one of them
+    # reflected -- so they tie exactly, and the tie is real rather than
+    # numerical. Given two explanations that fit identically, the one that does
+    # not require the frame to be reflected is the right answer: a mirror is a
+    # correction the game then has to carry for ever, to undo a choice made
+    # here by list order.
+    scored = sorted(
+        ((front, *score_front(captured, front)) for front in AXIS_CHOICES),
+        key=lambda row: (round(row[1], 3), row[3]))
+    best_front, best_rms = scored[0][0], scored[0][1]
+
+    print()
+    print("  front axis      accuracy   flicks it could read")
+    print("  " + "-" * 50)
+    for front, rms, _off, flip, n in scored:
+        mark = "  <- in use" if front == in_use else ""
+        if front == best_front and front != in_use:
+            mark = "  <- fits best"
+        shown = "  --  " if rms == float("inf") else f"{rms:5.1f} deg"
+        print(f"  {front:<12}   {shown}   {n:2d} of {len(captured)}"
+              + ("  mirrored" if flip and rms != float("inf") else "") + mark)
+
     print()
     print("  What that means")
     print("  " + "-" * 50)
-    if mirrored:
+
+    # The axis in use has to be beaten convincingly, not merely edged out. With
+    # a dozen hand-thrown flicks two axes can land a few degrees apart by luck,
+    # and telling somebody to change a correct setting is worse than saying
+    # nothing.
+    in_use_rms = next(row[1] for row in scored if row[0] == in_use)
+    if best_front != in_use and best_rms < in_use_rms * 0.6:
+        print(f"  * THE FRONT AXIS IS WRONG. These flicks were read as though")
+        print(f"    {in_use} pointed away from you, which leaves {in_use_rms:.0f} degrees of")
+        print(f"    scatter. Read as {best_front} the same flicks come out to "
+              f"{best_rms:.1f} degrees.")
+        print(f"    Nothing else below is worth acting on until that is fixed.")
+        print()
+        print(f"    Set it in the game's debug panel (Orientation), or re-run")
+        print(f"    this with --front {best_front}. The bridge takes it as")
+        print(f"    --front {best_front} too.")
+        print()
+        offset, mirrored, residual_rms = (scored[0][2], scored[0][3], best_rms)
+        print(f"    Read as {best_front}, the rest of this run says:")
+    elif mirrored:
         print("  * The board reads MIRRORED -- clockwise and anticlockwise are")
         print("    swapped. That is a wrong front axis, not a tuning problem.")
         print("    Run the direction check in the game's debug panel, or try")
-        print(f"    --front with the opposite sign of {bridge.config.front}.")
+        print(f"    --front with the opposite sign of {in_use}.")
     if abs(offset) > 5.0:
         print(f"  * Everything is rotated by {offset:+.1f} degrees. This is one")
         print("    number and the game already corrects it -- run the direction")
@@ -397,8 +526,14 @@ def main() -> int:
     parser.add_argument("--host", help="board IP, to use WiFi instead")
     parser.add_argument("--rate", type=int, default=400,
                         help="samples per second to ask for (default: %(default)s)")
-    parser.add_argument("--front", default=BridgeConfig().front,
-                        choices=["+X", "-X", "+Y", "-Y", "+Z", "-Z"])
+    # No default here. It is filled in below from what the game is actually
+    # set to, and only falls back to the stock axis if that cannot be read --
+    # a checking tool measuring against a different front axis from the one
+    # being played on is measuring its own flag.
+    parser.add_argument("--front", default=None,
+                        choices=["+X", "-X", "+Y", "-Y", "+Z", "-Z"],
+                        help="board axis pointing away from you "
+                             "(default: whatever the game is set to)")
     parser.add_argument("--threshold", type=float,
                         default=BridgeConfig().on_threshold_dps)
     parser.add_argument("--commit", type=float,
@@ -412,6 +547,16 @@ def main() -> int:
     parser.add_argument("--seconds", type=float, default=30.0,
                         help="record only: how long to capture")
     args = parser.parse_args()
+
+    if args.front is None:
+        args.front, where = read_game_front()
+        if args.front is None:
+            args.front = BridgeConfig().front
+            print(f"note: could not read the game's front axis ({where}), so "
+                  f"this is measuring against {args.front}. If that is not how "
+                  f"the board is mounted, pass --front.")
+        else:
+            print(f"Front axis {args.front}, from the game's own settings.")
 
     if args.mode == "replay":
         if not args.file:
