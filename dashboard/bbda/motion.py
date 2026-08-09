@@ -650,6 +650,30 @@ class SectorMap:
         return self.sector_of(angle)
 
 
+def _small_rotation(rotvec: np.ndarray) -> np.ndarray:
+    """Rotation matrix for a rotation vector, in radians (Rodrigues).
+
+    Used a step at a time to carry a moving frame along, so the angles are
+    always small -- a tenth of a degree at 200 Hz even on a hard flick. The
+    exact form is used anyway rather than the ``I + [w]x`` approximation,
+    because the approximation is not a rotation: it stretches by
+    ``1 + theta^2/2`` every step, and a few hundred steps of that is a frame
+    that has quietly grown, which shows up as a direction error that gets
+    worse the longer the movement lasts.
+    """
+    theta = float(np.linalg.norm(rotvec))
+    if theta < 1e-12:
+        return np.eye(3)
+    axis = np.asarray(rotvec, dtype=float) / theta
+    cross = np.array([
+        [0.0, -axis[2], axis[1]],
+        [axis[2], 0.0, -axis[0]],
+        [-axis[1], axis[0], 0.0],
+    ])
+    return (np.eye(3) + math.sin(theta) * cross
+            + (1.0 - math.cos(theta)) * (cross @ cross))
+
+
 def planarity(vector: np.ndarray, plane: tuple[int, int]) -> float:
     """Fraction of a vector's length lying in ``plane``, 0..1.
 
@@ -763,6 +787,143 @@ def flick_frame(front: str = "+X") -> FlickFrame:
     return FlickFrame(front=AXIS_VECTORS[front], up=AXIS_VECTORS[up])
 
 
+def levelled_frame(front: np.ndarray, up_world: np.ndarray,
+                   fallback: np.ndarray) -> FlickFrame:
+    """A flick frame whose "up" is the real up rather than the board's.
+
+    ``up_world`` is which way is actually up, expressed in board axes -- what
+    :class:`GravityTracker` produces. It is projected perpendicular to
+    ``front`` and normalised, because :class:`FlickFrame` needs an orthonormal
+    pair to read a bearing off.
+
+    Why this is the single largest accuracy fix available
+    -----------------------------------------------------
+    With the board's own ``+Z`` as up, the bearing is measured in the *board's*
+    frame, so every degree the board is rolled about its front axis rotates
+    every reported direction by that same degree. Hold it dead level and the
+    directions are right; hold it canted 25 degrees, as anybody actually does
+    while swinging something, and a flick straight up reports 25 degrees off --
+    which at a 60 degree lane pitch is most of the way to the neighbouring
+    lane. Nothing downstream can undo it, because it is not a fixed offset: it
+    changes with how the board happens to be held for that one flick.
+
+    Gravity does not move, so measuring against it makes the answer independent
+    of the grip. Roll the board and ``up_world`` rolls with it in board axes;
+    the two rotations cancel exactly and the reported bearing does not budge.
+    Pitch and yaw of the *front* axis fall out too, because the projection is
+    what removes them.
+
+    ``fallback`` is used when the two are too nearly parallel to define a plane
+    -- the board pointed at the ceiling or the floor, where "up" genuinely has
+    no meaning within the plane the front sweeps and any answer would be the
+    direction of rounding error.
+    """
+    front = np.asarray(front, dtype=float)
+    up = np.asarray(up_world, dtype=float)
+    up = up - front * float(np.dot(up, front))
+    length = float(np.linalg.norm(up))
+    # 0.26 is about 15 degrees off vertical. Below that the projection is
+    # mostly noise, and a frame built from it would spin freely.
+    if length < 0.26:
+        return FlickFrame(front=front, up=np.asarray(fallback, dtype=float))
+    return FlickFrame(front=front, up=up / length)
+
+
+# ----------------------------------------------------------------------
+# Which way is up, from the board's point of view
+# ----------------------------------------------------------------------
+class GravityTracker:
+    """Follows which way is up, in board axes, through a flick.
+
+    A complementary filter, and a deliberately small one: it tracks a single
+    unit vector rather than a full attitude, because a full attitude needs a
+    heading reference this does not have and the heading is the one part that
+    is not wanted. Two halves:
+
+    * **Propagate with the gyroscope.** A direction fixed in the world, written
+      in board axes, turns the opposite way to the board: ``du/dt = -w x u``.
+      Over the tenth of a second a flick lasts, an integrated gyroscope is very
+      accurate -- this part is what keeps the reference honest *during* the
+      movement, when the accelerometer is useless.
+    * **Correct with the accelerometer, but only when it can be believed.** A
+      still board's accelerometer points straight up and nothing else does; a
+      moving one measures gravity plus whatever the hand is doing, and taking
+      that as vertical is how a reference ends up chasing the flick it is meant
+      to be measured against. So the correction is weighted by how close the
+      reading is to 1 g and how slowly the board is turning, and during a real
+      flick both terms collapse and the filter simply coasts.
+
+    ``tau`` is how long the accelerometer takes to pull the estimate back when
+    it is fully trusted. Long, because the only thing it has to track is how
+    somebody is holding the board, which changes over seconds; short values
+    just let the swing back in.
+    """
+
+    def __init__(
+        self,
+        tau: float = 0.8,
+        accel_tolerance_g: float = 0.18,
+        gyro_tolerance_dps: float = 160.0,
+    ) -> None:
+        self.tau = tau
+        self.accel_tolerance_g = accel_tolerance_g
+        self.gyro_tolerance_dps = gyro_tolerance_dps
+        self.up: np.ndarray | None = None
+        #: How much the last accelerometer reading was believed, 0..1. Exposed
+        #: so a display can say "the reference is coasting" rather than leaving
+        #: a wrong direction unexplained.
+        self.trust = 0.0
+
+    def reset(self) -> None:
+        self.up = None
+        self.trust = 0.0
+
+    @property
+    def ready(self) -> bool:
+        return self.up is not None
+
+    def update(self, accel_g: np.ndarray, gyro_dps: np.ndarray,
+               dt: float) -> np.ndarray | None:
+        accel = np.asarray(accel_g, dtype=float)
+        gyro = np.asarray(gyro_dps, dtype=float)
+        magnitude = float(np.linalg.norm(accel))
+
+        if self.up is None:
+            # Only start from a reading that looks like gravity and nothing
+            # else. Starting from a board mid-swing would seed the filter with
+            # a vertical that is off by however hard it was being swung, and
+            # tau seconds is a long time to be wrong for.
+            if abs(magnitude - 1.0) < self.accel_tolerance_g and \
+                    float(np.linalg.norm(gyro)) < self.gyro_tolerance_dps:
+                self.up = accel / magnitude
+                self.trust = 1.0
+            return self.up
+
+        if dt > 0.0:
+            omega = np.radians(gyro)
+            self.up = self.up - np.cross(omega, self.up) * dt
+            norm = float(np.linalg.norm(self.up))
+            if norm > 1e-9:
+                self.up = self.up / norm
+
+        # Two Gaussian gates rather than hard cut-offs, so the reference eases
+        # back rather than snapping the moment a movement ends -- a step in the
+        # vertical between one flick and the next would be a step in every
+        # direction reported after it.
+        if magnitude > 1e-6:
+            level = math.exp(-((magnitude - 1.0) / self.accel_tolerance_g) ** 2)
+            still = math.exp(-(float(np.linalg.norm(gyro))
+                               / self.gyro_tolerance_dps) ** 2)
+            self.trust = level * still
+            gain = min(1.0, dt / max(1e-6, self.tau)) * self.trust
+            if gain > 0.0:
+                self.up = self.up + gain * (accel / magnitude - self.up)
+                norm = float(np.linalg.norm(self.up))
+                if norm > 1e-9:
+                    self.up = self.up / norm
+        return self.up
+
+
 def flick_bearing_map(count: int = 6, offset_deg: float = 0.0) -> SectorMap:
     """Sectors named by their angle clockwise from straight up.
 
@@ -788,6 +949,34 @@ class Flick:
     sector: Sector | None = None   # set only in sector mode
     peak_vector: np.ndarray = field(default_factory=lambda: np.zeros(3))
 
+    #: The whole stroke as one rotation: the gyroscope integrated from the
+    #: first sample of the flick to the last, in degrees, expressed in the
+    #: board axes as they were at the *start*. This is where the board ended up
+    #: relative to where it began, which is the thing a person means by the
+    #: direction of a movement.
+    #:
+    #: It replaces the single peak sample as the source of the direction, and
+    #: the difference is not marginal. One sample is one 5 ms slice of a
+    #: gesture: it carries the full gyro noise, it lands wherever the peak
+    #: happened to fall, and on a flick whose axis shifts through the stroke --
+    #: which is most of them, since a wrist does not rotate about a fixed line
+    #: -- it reports the instant rather than the movement. Integrating averages
+    #: the noise down by the root of the sample count and answers the question
+    #: actually being asked.
+    rotation_vector: np.ndarray = field(default_factory=lambda: np.zeros(3))
+    #: Total turn over the stroke, degrees. |rotation_vector|.
+    rotation_deg: float = 0.0
+    #: Where the flick went, degrees clockwise from up, in the frame captured
+    #: when it started. Carried on the flick rather than recomputed by callers
+    #: because that frame is levelled against gravity at onset and no longer
+    #: exists by the time anyone asks.
+    bearing_deg: float = float("nan")
+    #: The frame the bearing was read in, for anything wanting to show it.
+    frame: FlickFrame | None = None
+    #: Samples the stroke was integrated over. Small numbers mean the sample
+    #: rate is too low for the direction to be trusted.
+    samples: int = 0
+
     #: When the rotation peaked. Anything timing a flick against something
     #: else -- music, most obviously -- wants this and not ``t``.
     #:
@@ -808,6 +997,33 @@ class Flick:
         return f"{'+' if self.direction > 0 else '-'}{self.axis.upper()}"
 
 
+@dataclass
+class FlickRejection:
+    """A movement that reached the threshold but was not called a flick.
+
+    A refused flick is invisible from the outside: nothing is emitted, so a
+    player flicking away at a game that does not respond has no way to tell a
+    gesture that was rejected from one the sensor never saw. That is the single
+    hardest thing to diagnose about this input, and it is entirely fixable --
+    the detector knows exactly which test failed at the moment it fails.
+
+    ``reason`` is a stable key ("swing", "margin", "duration", "dominance"),
+    not a sentence, so callers can phrase it for wherever it is being shown.
+    """
+
+    t: float
+    reason: str
+    peak_dps: float
+    duration_ms: float
+    #: Where the movement went, in degrees clockwise from up. Set whenever a
+    #: frame is configured, including for rejections -- knowing which way a
+    #: refused gesture went is most of the diagnosis.
+    bearing_deg: float = float("nan")
+    #: The measured value of whatever test failed, and the floor it missed.
+    value: float = 0.0
+    limit: float = 0.0
+
+
 class FlickDetector:
     """Detects a short, sharp rotation and names the axis it happened about.
 
@@ -816,6 +1032,36 @@ class FlickDetector:
     state machine rather than a simple threshold so that it can report the
     *peak* of the whole event -- a plain threshold would fire on the leading
     edge, where the axis split is still ambiguous.
+
+    Where the direction comes from
+    ------------------------------
+    From the stroke as a whole: the gyroscope integrated from the first sample
+    to the last, carried in the board axes the flick began in, which is where
+    the board *ended up* relative to where it *started*. Not from the single
+    fastest sample, which is what this used to use and which has three
+    problems that a hand-thrown gesture hits every time. One sample carries the
+    full sensor noise where the average of thirty carries a fifth of it. The
+    sample that happens to be fastest is chosen by where the peak landed
+    between two samples, not by anything about the movement. And a wrist does
+    not turn about a fixed axis -- the axis sweeps through the stroke -- so the
+    instant of peak rate names where the board was going at that instant, not
+    where the movement went.
+
+    Where "up" comes from
+    ---------------------
+    From gravity, not from the board -- see :func:`levelled_frame`. The board
+    is held in a hand, and a hand holds it at whatever angle is comfortable;
+    measuring the direction against the board's own axes makes every reported
+    direction turn with the grip.
+
+    When it reports
+    ---------------
+    At the end of the outward stroke, not at the end of the gesture. The rate
+    falling back under the off threshold means the hand has finished
+    decelerating and has usually begun the return stroke; waiting for it costs
+    tens of milliseconds of latency and pulls the return stroke -- a real
+    rotation the other way -- into the integral that is measuring the flick.
+    See ``commit_fraction``.
 
     ``dominance`` is the fraction of the peak rotation vector's magnitude that
     lies on the winning axis. Requiring it to be high is what makes "which
@@ -868,6 +1114,10 @@ class FlickDetector:
         plane: tuple[int, int] = (0, 1),
         min_margin: float = 0.25,
         frame: FlickFrame | None = None,
+        commit_fraction: float = 0.6,
+        commit_samples: int = 2,
+        level_with_gravity: bool = True,
+        gravity: GravityTracker | None = None,
     ) -> None:
         self.on_threshold_dps = on_threshold_dps
         self.off_threshold_dps = off_threshold_dps
@@ -879,22 +1129,123 @@ class FlickDetector:
         self.plane = plane
         self.min_margin = min_margin
         self.frame = frame
+        #: Fraction of the running peak the rate has to fall to before the
+        #: stroke is called finished. See :meth:`update` -- this is the whole
+        #: of the latency improvement and the only knob that trades latency
+        #: against how much of the stroke is integrated.
+        #:
+        #: For a flick shaped like a half sine, which is close to what a hand
+        #: throws, committing at fraction ``f`` reports at
+        #: ``1 - asin(f)/pi`` of the way through and by then has integrated
+        #: ``(1 - cos(pi * that))/2`` of the total turn. At the default 0.6
+        #: that is 80% of the way through with 90% of the rotation in hand, so
+        #: the report comes 0.3 gesture-lengths after the peak instead of the
+        #: 0.5 that waiting for the off threshold costs -- around 30 ms rather
+        #: than 50 on a typical flick, with a direction that is 90% of the
+        #: stroke rather than one sample of it.
+        #:
+        #: Raising it reports sooner on less of the stroke; 1.0 would report at
+        #: the peak itself, which is as early as anything can be known and is
+        #: also where the direction is least settled. Lowering it towards the
+        #: off threshold restores the old behaviour, return stroke and all.
+        self.commit_fraction = commit_fraction
+        self.commit_samples = max(1, int(commit_samples))
+        self.level_with_gravity = level_with_gravity
+        self.gravity = gravity if gravity is not None else GravityTracker()
 
         self._active = False
         self._start_t = 0.0
+        self._prev_t: float | None = None
         self._peak_vector = np.zeros(3)
         self._peak_norm = 0.0
         self._peak_t = 0.0
         self._peak_accel = 0.0
         self._last_emit_t = -1e9
+        #: Integrated turn over the stroke so far, degrees, in the board axes
+        #: the stroke started in.
+        self._rotation = np.zeros(3)
+        #: Rotation from the current board axes to the ones at onset, so each
+        #: increment can be added in a frame that is not itself moving.
+        self._to_onset = np.eye(3)
+        self._onset_frame: FlickFrame | None = None
+        self._samples = 0
+        self._decaying = 0
+        self._reversed = False
+
+        #: Why the last completed movement was refused, or None if the last one
+        #: was accepted. Read it after :meth:`update` returns None; callers
+        #: that do not care can ignore it entirely.
+        self.last_rejection: FlickRejection | None = None
+        #: Bumped for every rejection, so a caller can tell "a new one" from
+        #: "the same one still sitting there" without comparing fields.
+        self.rejections = 0
 
     def reset(self) -> None:
         self._active = False
+        self._prev_t = None
         self._peak_vector = np.zeros(3)
         self._peak_norm = 0.0
         self._peak_t = 0.0
         self._peak_accel = 0.0
         self._last_emit_t = -1e9
+        self._rotation = np.zeros(3)
+        self._to_onset = np.eye(3)
+        self._onset_frame = None
+        self._samples = 0
+        self._decaying = 0
+        self._reversed = False
+        self.gravity.reset()
+
+    # ------------------------------------------------------------------
+    def live_frame(self) -> FlickFrame | None:
+        """The frame to read this flick's bearing in, levelled if it can be.
+
+        Built once per flick, at its start, rather than held as a constant:
+        the whole point of levelling is that the answer depends on how the
+        board is being held *now*, and a frame computed once at start-up would
+        be exactly the fixed board frame it is meant to replace.
+        """
+        if self.frame is None:
+            return None
+        if not self.level_with_gravity or not self.gravity.ready:
+            return self.frame
+        return levelled_frame(self.frame.front, self.gravity.up, self.frame.up)
+
+    def _refuse(self, t: float, reason: str, duration_ms: float,
+                value: float, limit: float,
+                turn: np.ndarray | None = None,
+                frame: FlickFrame | None = None) -> None:
+        """Record why a completed movement was not a flick, and refuse it.
+
+        Returns None so every refusal in :meth:`update` stays a one-line
+        ``return self._refuse(...)`` and cannot accidentally fall through into
+        emitting the flick it just rejected.
+
+        ``turn`` and ``frame`` are the same integrated rotation and levelled
+        frame the flick would have been described by, passed in rather than
+        re-derived so a refusal reports the direction the detector actually
+        judged. A refusal quoting a different bearing from the one it was
+        refused on is worse than quoting none: it sends whoever is reading it
+        to tune the wrong thing.
+        """
+        bearing = float("nan")
+        vector = self._peak_vector if turn is None else turn
+        reference = frame if frame is not None else self._onset_frame
+        if reference is None:
+            reference = self.frame
+        if reference is not None:
+            bearing = float(reference.bearing_deg(vector))
+        self.last_rejection = FlickRejection(
+            t=t,
+            reason=reason,
+            peak_dps=float(self._peak_norm),
+            duration_ms=float(duration_ms),
+            bearing_deg=bearing,
+            value=float(value),
+            limit=float(limit),
+        )
+        self.rejections += 1
+        return None
 
     def update(self, t: float, gyro_dps: np.ndarray, accel_g: np.ndarray) -> Flick | None:
         gyro = np.asarray(gyro_dps, dtype=float)
@@ -904,6 +1255,20 @@ class FlickDetector:
         # detection itself.
         linear = abs(float(np.linalg.norm(accel_g)) - 1.0)
 
+        # dt off the device clock, taken here rather than asked of the caller so
+        # that every existing call site keeps working. Anything absurd -- a
+        # first sample, a board that rebooted, a gap in the stream -- is treated
+        # as no elapsed time, which costs one sample of integration and is a far
+        # better failure than integrating a second of rotation into one step.
+        dt = 0.0
+        if self._prev_t is not None:
+            gap = t - self._prev_t
+            if 0.0 < gap < 0.2:
+                dt = gap
+        self._prev_t = t
+
+        self.gravity.update(accel_g, gyro, dt)
+
         if not self._active:
             if rate >= self.on_threshold_dps and (t - self._last_emit_t) * 1000.0 >= self.refractory_ms:
                 self._active = True
@@ -912,63 +1277,137 @@ class FlickDetector:
                 self._peak_norm = rate
                 self._peak_t = t
                 self._peak_accel = linear
+                self._rotation = np.zeros(3)
+                self._to_onset = np.eye(3)
+                self._onset_frame = self.live_frame()
+                self._samples = 0
+                self._decaying = 0
+                self._reversed = False
             return None
 
-        # Event in progress: track the peak.
+        # --- event in progress -----------------------------------------
         if rate > self._peak_norm:
             self._peak_norm = rate
             self._peak_vector = gyro.copy()
             self._peak_t = t
         self._peak_accel = max(self._peak_accel, linear)
 
+        if dt > 0.0:
+            # Add this step's turn in the axes the flick *started* in. The board
+            # is turning while it is being measured, so a step measured in the
+            # board's current axes is measured in a frame that has already moved
+            # -- add those up directly and a flick that rolls partway through
+            # comes out pointing somewhere between where it went and where it
+            # would have gone, with the error growing with the roll. Carrying
+            # the frame along is the difference between "the board turned this
+            # much" and "the board ended up here".
+            delta = gyro * dt                       # degrees, current axes
+            self._rotation = self._rotation + self._to_onset @ delta
+            self._to_onset = self._to_onset @ _small_rotation(np.radians(delta))
+            self._samples += 1
+
         duration_ms = (t - self._start_t) * 1000.0
-        if rate > self.off_threshold_dps and duration_ms <= self.max_duration_ms:
+
+        # --- has the outward stroke finished? --------------------------
+        #
+        # Three ways to say yes, and the first two are why this is not the same
+        # detector it was. Waiting for the rate to fall under the off threshold
+        # means waiting out the whole gesture -- the hand decelerating, and then
+        # the return stroke on top -- which is 60 to 100 ms of latency the
+        # player feels directly, and it drags the return stroke into the
+        # integral, where it cancels the very rotation being measured.
+        #
+        #   * the rate has fallen to `commit_fraction` of its peak and stayed
+        #     there. The peak is behind us and the stroke has spent most of its
+        #     turn, so there is nothing left to learn by waiting;
+        #   * the rate has reversed against the turn so far, which is the return
+        #     stroke starting and is unambiguous;
+        #   * the old test, still here as the backstop for a movement that
+        #     simply peters out.
+        reversal = (self._samples > 2
+                    and float(np.dot(gyro, self._rotation)) < 0.0)
+        if reversal:
+            self._reversed = True
+        if rate <= self._peak_norm * self.commit_fraction:
+            self._decaying += 1
+        else:
+            self._decaying = 0
+
+        finished = (
+            self._reversed
+            or self._decaying >= self.commit_samples
+            or rate <= self.off_threshold_dps
+            or duration_ms > self.max_duration_ms
+        )
+        if not finished:
             return None
 
-        # Event finished (or ran too long to be a flick).
         self._active = False
         self._last_emit_t = t
 
         if duration_ms < self.min_duration_ms or duration_ms > self.max_duration_ms:
-            return None
+            return self._refuse(t, "duration", duration_ms, duration_ms,
+                                self.min_duration_ms if duration_ms < self.min_duration_ms
+                                else self.max_duration_ms)
         if self._peak_norm <= 0:
             return None
 
-        index = int(np.argmax(np.abs(self._peak_vector)))
-        axis_dominance = abs(self._peak_vector[index]) / self._peak_norm
+        # The direction comes off the integrated stroke; the *strength* still
+        # comes off the peak, because that is what "how hard" means. On a stroke
+        # too short to have been integrated at all, fall back to the peak sample
+        # rather than reporting the direction of a zero vector.
+        turn = self._rotation
+        rotation_deg = float(np.linalg.norm(turn))
+        if self._samples < 2 or rotation_deg < 1e-6:
+            turn = self._peak_vector
+            rotation_deg = float(np.linalg.norm(turn))
+        if rotation_deg < 1e-9:
+            return None
+
+        index = int(np.argmax(np.abs(turn)))
+        axis_dominance = abs(turn[index]) / rotation_deg
+        frame = self._onset_frame
+        bearing = float("nan")
 
         sector = None
-        if self.sector_map is not None and self.frame is not None:
+        if self.sector_map is not None and frame is not None:
             # Bearing mode: a roll about the front is refused here, since it
             # leaves the front pointing where it was and so has no direction.
-            swing = self.frame.swing_fraction(self._peak_vector)
+            swing = frame.swing_fraction(turn)
             if swing < self.min_dominance:
-                return None
-            sector = self.sector_map.sector_of(
-                self.frame.bearing_deg(self._peak_vector)
-            )
+                return self._refuse(t, "swing", duration_ms, swing,
+                                    self.min_dominance, turn=turn, frame=frame)
+            bearing = float(frame.bearing_deg(turn))
+            sector = self.sector_map.sector_of(bearing)
             if sector.margin < self.min_margin:
-                return None
+                return self._refuse(t, "margin", duration_ms, sector.margin,
+                                    self.min_margin, turn=turn, frame=frame)
             dominance = swing
         elif self.sector_map is not None:
             # In sector mode "dominance" means how much of the rotation lay in
             # the plane being divided up, not how much lay on one axis.
-            in_plane = planarity(self._peak_vector, self.plane)
+            in_plane = planarity(turn, self.plane)
             if in_plane < self.min_dominance:
-                return None
-            sector = self.sector_map.sector_of_vector(self._peak_vector, self.plane)
+                return self._refuse(t, "planarity", duration_ms, in_plane,
+                                    self.min_dominance, turn=turn, frame=frame)
+            sector = self.sector_map.sector_of_vector(turn, self.plane)
             if sector.margin < self.min_margin:
-                return None
+                return self._refuse(t, "margin", duration_ms, sector.margin,
+                                    self.min_margin, turn=turn, frame=frame)
             dominance = in_plane
         else:
             if axis_dominance < self.min_dominance:
-                return None
+                return self._refuse(t, "dominance", duration_ms, axis_dominance,
+                                    self.min_dominance, turn=turn, frame=frame)
             dominance = axis_dominance
+            if frame is not None:
+                bearing = float(frame.bearing_deg(turn))
 
+        self.last_rejection = None
         return Flick(
             t=t,
             axis=AXIS_NAMES[index],
-            direction=1 if self._peak_vector[index] > 0 else -1,
+            direction=1 if turn[index] > 0 else -1,
             peak_dps=abs(float(self._peak_vector[index])),
             peak_accel_g=self._peak_accel,
             dominance=dominance,
@@ -976,6 +1415,11 @@ class FlickDetector:
             sector=sector,
             peak_vector=self._peak_vector.copy(),
             peak_t=self._peak_t,
+            rotation_vector=np.asarray(turn, dtype=float).copy(),
+            rotation_deg=rotation_deg,
+            bearing_deg=bearing,
+            frame=frame,
+            samples=self._samples,
         )
 
 

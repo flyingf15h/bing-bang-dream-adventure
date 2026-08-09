@@ -694,12 +694,22 @@ class EasyModeWizard(QWidget):
             self.dash.cal.accel_bias = bias
             self.dash.cal.accel_scale = scale
             self.dash.autosave_calibration("accelerometer bias and gain")
-            self.feedback.setText("All six sides done — press Next")
-            self._set_feedback_colour(theme.STATUS["good"])
-            self.detail.setText(
+            detail = (
                 f"Offsets {bias[0]:+.3f}, {bias[1]:+.3f}, {bias[2]:+.3f} g; "
                 f"gains {scale[0]:.3f}, {scale[1]:.3f}, {scale[2]:.3f}."
             )
+            if self._accel.rejected:
+                # Said out loud and in the step that produced it. A refused
+                # axis is not a small imperfection to mention later: it means
+                # two of the six positions were the same one, and the person
+                # who just did them is the only one who can redo them.
+                self.feedback.setText("Two sides did not come out right")
+                self._set_feedback_colour(theme.STATUS["serious"])
+                detail += "\n" + "\n".join(self._accel.rejected)
+            else:
+                self.feedback.setText("All six sides done — press Next")
+                self._set_feedback_colour(theme.STATUS["good"])
+            self.detail.setText(detail)
             self.next_button.setEnabled(True)
         else:
             self.feedback.setText(

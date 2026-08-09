@@ -115,10 +115,23 @@ func _draw() -> void:
 		draw_string(_font, at + Vector2(-5, 5), str(sector),
 			HORIZONTAL_ALIGNMENT_LEFT, -1, 16, Color(0.05, 0.05, 0.08))
 
+	# Where the board is being swung right now, at whatever length the swing
+	# has reached against the flick threshold. Drawn dim and behind the flick
+	# line: this one moves while you are still deciding, which is what makes a
+	# wrong --front obvious without having to complete a gesture and guess
+	# afterwards at which lane lit.
+	if ImuInput.motion_supported and not is_nan(ImuInput.live_angle_deg):
+		var threshold: float = maxf(1.0, ImuInput.flick_threshold_dps)
+		var reach := clampf(ImuInput.live_swing_dps / threshold, 0.0, 1.0)
+		if reach > 0.05:
+			draw_line(centre,
+				centre + _vec(ImuInput.live_angle_deg) * (RADIUS - 24.0) * reach,
+				Color(0.55, 0.75, 1.0, 0.25 + 0.45 * reach), 8.0)
+
 	# The last flick, drawn as the direction it actually came in at, so a
 	# systematic rotation shows up as an arrow that never points at a lane.
 	if not is_nan(ImuInput.last_bearing_deg):
-		var angle := ImuInput.bearing_to_game_angle(ImuInput.last_bearing_deg)
+		var angle := ImuInput.game_angle_of(ImuInput.last_bearing_deg)
 		draw_line(centre, centre + _vec(angle) * (RADIUS - 24.0),
 			Color(0.4, 0.9, 1.0), 3.0)
 

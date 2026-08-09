@@ -9,6 +9,15 @@ extends Node
 
 signal tap(event: TapEvent)
 
+## What gameplay did with a tap, once it has judged it: true if it landed on a
+## note, false if it was a well-formed input that hit nothing.
+##
+## Here rather than inside gameplay because two things outside scoring need it
+## and neither should have to read the note list: the arrow, which only takes a
+## lane's colour for a hit, and the debug panel, which is often open on a
+## screen where there is no scoring at all.
+signal tap_judged(source: String, hit: bool)
+
 class TapEvent:
 	var source: String
 	var timestamp_ms: int
@@ -79,3 +88,8 @@ func report_direction(source: String, angle_deg: float, strength: float = 1.0,
 		lag_ms: float = 0.0) -> void:
 	tap.emit(TapEvent.new(source, Vector2.ZERO, strength,
 		fposmod(angle_deg, 360.0), lag_ms))
+
+
+## Called by gameplay once it knows whether a tap hit anything.
+func report_judgement(source: String, hit: bool) -> void:
+	tap_judged.emit(source, hit)

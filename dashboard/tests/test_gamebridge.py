@@ -15,6 +15,7 @@ one side and not the other.
 """
 
 import json
+import time
 import math
 import socket
 import sys
@@ -239,20 +240,59 @@ for duration_s in (0.06, 0.09, 0.12, 0.15):
     measured.append((duration_s * 1000.0, got[0]["lag_ms"]))
 check("every flick carries the lag between its peak and its report", ok)
 
-# Half the gesture, because the peak of a symmetric flick is its middle.
+# A fraction of the gesture, and less than half of it.
+#
+# Half was what waiting for the rotation to die away cost: the peak of a
+# symmetric flick is its middle, and the old detector reported at the end. The
+# detector now commits once the rate has fallen to `commit_fraction` of its own
+# peak, which on a half-sine lands about 0.3 of the gesture after the peak
+# rather than 0.5 -- so this is bounded above by the old behaviour and below by
+# zero, which is where reporting at the peak itself would put it.
+#
 # Checked as a relationship rather than a constant precisely because it is not
 # one: that it varies is the whole reason it has to travel with the event.
 ok = bool(measured)
 for duration_ms, lag_ms in measured:
-    if abs(lag_ms - duration_ms / 2.0) > 12.0:
+    if not 0.15 * duration_ms <= lag_ms <= 0.45 * duration_ms:
         ok = False
         check(f"lag for a {duration_ms:.0f} ms flick", False,
-              f"got {lag_ms:.0f} ms, expected about {duration_ms / 2:.0f}")
-check("the lag is about half the flick's duration", ok,
+              f"got {lag_ms:.0f} ms, wanted {0.15 * duration_ms:.0f}"
+              f"..{0.45 * duration_ms:.0f}")
+check("the lag is a third of the flick, not half of it", ok,
       "  ".join(f"{d:.0f}ms->{l:.0f}ms" for d, l in measured))
 check("and it genuinely varies, so it cannot be a fixed offset",
       len({round(lag, 0) for _, lag in measured}) > 1,
       str([lag for _, lag in measured]))
+
+# The whole point of committing early is that it beats waiting. Stated as its
+# own check because it is the claim the change was made for, and a future
+# tuning that quietly gives it back should fail here rather than merely feel
+# worse to play.
+patient = make_bridge()
+patient.detector.commit_fraction = 0.0     # only the off threshold ends it
+feed(patient, bearing_flick(30.0, duration_s=0.12))
+old_style = [r for r in drain(listener) if r.get("type") == "flick"]
+quick = make_bridge()
+feed(quick, bearing_flick(30.0, duration_s=0.12))
+new_style = [r for r in drain(listener) if r.get("type") == "flick"]
+check("committing on the stroke beats waiting for the rotation to die",
+      bool(old_style) and bool(new_style)
+      and new_style[0]["lag_ms"] < old_style[0]["lag_ms"] - 5.0,
+      f"{new_style[0]['lag_ms']:.0f} ms against "
+      f"{old_style[0]['lag_ms']:.0f} ms" if old_style and new_style else "")
+
+# The direction is the stroke, not one sample of it, and the record says how
+# much of a stroke there was. A flick named off two samples is one the sample
+# rate could not resolve, and that has to be visible.
+turned = make_bridge()
+feed(turned, bearing_flick(30.0, duration_s=0.12))
+turn_record = [r for r in drain(listener) if r.get("type") == "flick"]
+check("a flick reports how far it actually turned",
+      bool(turn_record) and turn_record[0].get("turn_deg", 0.0) > 5.0,
+      f"{turn_record[0].get('turn_deg')} deg" if turn_record else "")
+check("and how many samples the direction was averaged over",
+      bool(turn_record) and turn_record[0].get("samples", 0) >= 5,
+      f"{turn_record[0].get('samples')} samples" if turn_record else "")
 
 # peak_t must precede t, or the game would reach forward in time.
 lagged = make_bridge()
@@ -263,11 +303,25 @@ check("the peak is timestamped before the end of the event",
 check("the lag is never negative",
       bool(records_lag) and records_lag[0]["lag_ms"] >= 0.0)
 
-# The other side of that: a flick straight up falls between two lanes, and the
-# margin floor is what refuses it instead of picking one by rounding error.
+# A flick straight up falls exactly between two lanes. It used to be refused
+# for that, and is not any more: the margin floor defaults to zero because the
+# game resolves aim itself, matching a flick against every note in reach. The
+# bearing still has to be reported honestly, since that is what the game
+# resolves *with*.
 edge = make_bridge()
 feed(edge, bearing_flick(0.0))
-check("a flick onto a lane boundary is refused rather than guessed",
+edge_records = [r for r in drain(listener) if r.get("type") == "flick"]
+check("a flick onto a lane boundary is reported, not refused",
+      len(edge_records) == 1, str(len(edge_records)))
+check("and carries the bearing it actually went, for the game to resolve",
+      bool(edge_records) and abs(((edge_records[0]["bearing"] + 180.0) % 360.0)
+                                 - 180.0) < 8.0,
+      str(edge_records[0]["bearing"]) if edge_records else "none")
+
+# The floor still works when it is asked for -- it is off by default, not gone.
+strict_edge = make_bridge(min_margin=0.25)
+feed(strict_edge, bearing_flick(0.0))
+check("a margin floor that was asked for still refuses the boundary",
       not [r for r in drain(listener) if r.get("type") == "flick"])
 
 # Strength has to mean something, or the game cannot use it for feedback.
@@ -314,6 +368,401 @@ check("demo flicks are well-formed flick records",
       len(demo_records) == 1 and demo_records[0].get("demo") is True
       and abs(demo_records[0]["bearing"] - 123.0) < 1e-6,
       str(demo_records[0]) if demo_records else "none")
+
+# ---------------- live motion, which the on-screen arrow follows ----------------
+# The arrow in node_2d.gd is drawn from these. They are not inputs and nothing
+# is scored from them, so the thing that can go wrong is subtler than a missed
+# flick: an arrow that points somewhere other than the lane the flick lands in
+# makes correct scoring look broken, and is the one failure worth testing for.
+#
+# motion_hz is set absurdly high here so every sample produces a record, which
+# is what lets a test see the peak of a flick rather than whichever sample the
+# 30 Hz timer happened to land on.
+live = make_bridge(motion_hz=1e9)
+feed(live, bearing_flick(30.0))
+live_records = drain(listener)
+motion = [r for r in live_records if r.get("type") == "motion"]
+check("motion records are sent while samples arrive", len(motion) > 20,
+      f"got {len(motion)}")
+
+if motion:
+    for field in ("bearing", "dps", "swing", "threshold_dps"):
+        check(f"a motion record carries {field}", field in motion[0])
+    check("the threshold travels with it, so the game need not be tuned too",
+          motion[0]["threshold_dps"] == BridgeConfig().on_threshold_dps,
+          str(motion[0]["threshold_dps"]))
+
+    peak = max(motion, key=lambda r: r["swing"])
+    check("the arrow points where the flick went",
+          abs(((peak["bearing"] - 30.0 + 180.0) % 360.0) - 180.0) < 2.0,
+          f"peak swing bearing {peak['bearing']}")
+    check("and therefore at the lane the flick is scored in",
+          nearest_lane(game_angle_of(peak["bearing"])) == 1,
+          f"lane {nearest_lane(game_angle_of(peak['bearing']))}")
+    check("the swing peaks above the flick threshold, so the arrow reaches full",
+          peak["swing"] > peak["threshold_dps"],
+          f"{peak['swing']} dps vs {peak['threshold_dps']}")
+
+    # The last records come from the still tail of feed(). If the window were
+    # not cleared after each send, the arrow would stay at full stretch for
+    # ever once the board had been flicked once.
+    check("a board put down reports itself still, so the arrow retracts",
+          motion[-1]["swing"] < 1.0, f"{motion[-1]['swing']} dps")
+
+# A roll spins the board without sending its front anywhere, so it has no
+# direction to draw. It must show up as rotation with almost no swing, or the
+# arrow would swing out to full length and point at a lane that no flick can
+# ever hit -- the detector refuses rolls.
+roll_live = make_bridge(motion_hz=1e9)
+feed(roll_live, roll_pulse)
+roll_motion = [r for r in drain(listener) if r.get("type") == "motion"]
+check("a roll reports rotation", bool(roll_motion)
+      and max(r["dps"] for r in roll_motion) > 300.0)
+check("but almost none of it as swing, so the arrow stays short",
+      bool(roll_motion)
+      and max(r["swing"] for r in roll_motion)
+      < 0.1 * max(r["dps"] for r in roll_motion),
+      f"swing {max((r['swing'] for r in roll_motion), default=0):.1f} vs "
+      f"dps {max((r['dps'] for r in roll_motion), default=0):.1f}")
+
+# The rate limit is what keeps a 200 Hz stream from becoming 200 datagrams a
+# second for something that is only looked at. One second of samples at the
+# board's real rate has to come out as about thirty records, not two hundred.
+#
+# The rate is measured on the board's clock, so this is exact rather than a
+# matter of how fast the machine running the test happens to be.
+throttled = make_bridge()
+t = 0.0
+for _ in range(200):
+    throttled._on_sample(sample(t, STILL))
+    t += DT
+throttled_motion = [r for r in drain(listener) if r.get("type") == "motion"]
+check("motion is rate limited rather than sent per sample",
+      28 <= len(throttled_motion) <= 32,
+      f"got {len(throttled_motion)} over {t:.1f}s, wanted about 30")
+
+silent = make_bridge(motion_hz=0.0)
+feed(silent, bearing_flick(30.0))
+silent_records = drain(listener)
+check("motion_hz=0 sends no motion at all",
+      not [r for r in silent_records if r.get("type") == "motion"])
+check("and flicks still arrive without it",
+      len([r for r in silent_records if r.get("type") == "flick"]) == 1)
+
+demo_motion_bridge = make_bridge()
+demo_motion_bridge.send_demo_motion(123.0, 400.0)
+demo_motion = [r for r in drain(listener) if r.get("type") == "motion"]
+check("demo motion is a well-formed motion record",
+      len(demo_motion) == 1 and demo_motion[0].get("demo") is True
+      and abs(demo_motion[0]["bearing"] - 123.0) < 1e-6
+      and demo_motion[0]["swing"] == 400.0,
+      str(demo_motion) if demo_motion else "none")
+
+
+# ---------------- refusals, which used to be silent ----------------
+# A flick that is rejected produces no flick record, which is indistinguishable
+# from a board that is unplugged: both are silence. These are the records that
+# tell the two apart, and they are the whole answer to "I flick and nothing
+# happens".
+refused_roll = make_bridge()
+feed(refused_roll, roll_pulse)
+roll_refusals = [r for r in drain(listener) if r.get("type") == "refused"]
+check("a refused roll says so instead of vanishing", len(roll_refusals) == 1,
+      f"got {len(roll_refusals)}")
+if roll_refusals:
+    record = roll_refusals[0]
+    check("the refusal names which test failed", record.get("reason") == "swing",
+          str(record.get("reason")))
+    check("it carries a sentence for a human", bool(record.get("detail")),
+          str(record.get("detail")))
+    check("which names the flag that moves the limit",
+          "--front" in record.get("detail", "") or "--swing" in record.get("detail", ""),
+          record.get("detail", ""))
+    for field in ("peak_dps", "duration_ms"):
+        check(f"the refusal carries {field}", field in record)
+
+# A flick straight up, against a bridge told to care about lane boundaries.
+# Same silence as a refused roll, different cause, and the fix is a different
+# flag -- so it has to say which.
+refused_edge = make_bridge(min_margin=0.25)
+feed(refused_edge, bearing_flick(0.0))
+edge_refusals = [r for r in drain(listener) if r.get("type") == "refused"]
+check("a flick on a lane boundary is reported as a boundary",
+      len(edge_refusals) == 1 and edge_refusals[0]["reason"] == "margin",
+      str([r.get("reason") for r in edge_refusals]))
+check("and it says which way it went, since that is the diagnosis",
+      bool(edge_refusals) and "bearing" in edge_refusals[0],
+      str(edge_refusals[0]) if edge_refusals else "none")
+
+# The one the detector cannot report at all: a movement that never reached the
+# threshold. Nothing happens inside the detector, so the bridge watches for it.
+weak = make_bridge()
+feed(weak, bearing_flick(30.0, peak_dps=90.0))
+weak_records = drain(listener)
+weak_refusals = [r for r in weak_records if r.get("type") == "refused"]
+check("a movement too gentle to reach the threshold is reported",
+      len(weak_refusals) == 1 and weak_refusals[0]["reason"] == "weak",
+      str([r.get("reason") for r in weak_refusals]))
+check("and no flick is claimed for it",
+      not [r for r in weak_records if r.get("type") == "flick"])
+if weak_refusals:
+    check("the weak report says how hard it actually was",
+          abs(weak_refusals[0]["peak_dps"] - 90.0) < 5.0,
+          str(weak_refusals[0]["peak_dps"]))
+    check("and suggests a threshold that would have accepted it",
+          "--threshold" in weak_refusals[0].get("detail", ""),
+          weak_refusals[0].get("detail", ""))
+
+# Below that, a hand adjusting its grip would report constantly. The floor is
+# what keeps the useful reports from being buried in noise.
+fidget = make_bridge()
+feed(fidget, bearing_flick(30.0, peak_dps=20.0))
+check("but an idle hand is not reported as a failed flick",
+      not [r for r in drain(listener) if r.get("type") == "refused"])
+
+# An accepted flick must not also be reported as refused, or every successful
+# hit would come with an explanation of why it did not work.
+accepted = make_bridge()
+feed(accepted, bearing_flick(30.0))
+accepted_records = drain(listener)
+check("an accepted flick produces no refusal",
+      len([r for r in accepted_records if r.get("type") == "flick"]) == 1
+      and not [r for r in accepted_records if r.get("type") == "refused"])
+
+
+# ---------------- a board that streams without measuring ----------------
+# The failure that costs the most time, because every other indicator is
+# healthy: the port is open, the rate is a perfect 200 Hz, the sample count
+# climbs, and the readings are one stale frame repeated for ever. The detector
+# is being fed valid samples of a board that is not moving, so it correctly
+# reports nothing, and the symptom is identical to bad tuning.
+frozen = make_bridge()
+FROZEN_ACCEL = np.array([-1.4218, 1.1824, -0.017])   # a real one, off a board
+t = 0.0
+for _ in range(400):
+    frozen._on_sample(Sample(t=t, accel=FROZEN_ACCEL, gyro=STILL, mag=STILL,
+                             temp=0.0, mag_fresh=True))
+    t += DT
+stalls = [r for r in drain(listener)
+          if r.get("type") == "status" and r.get("stalled")]
+check("a frozen stream is reported rather than read as stillness",
+      len(stalls) == 1, f"got {len(stalls)}")
+if stalls:
+    check("and says to unplug rather than to reset, which does not clear it",
+          "Unplug" in stalls[0]["detail"] and "reset is not enough" in stalls[0]["detail"],
+          stalls[0]["detail"][:60])
+check("the bridge knows it is stalled", frozen.stalled)
+
+# It must not fire on a board being held still: a real sensor's noise floor
+# moves the low bits every sample, so identical *readings* are the signal, not
+# a low rotation rate.
+still_board = make_bridge()
+t = 0.0
+rng = np.random.default_rng(7)
+for _ in range(600):
+    still_board._on_sample(Sample(
+        t=t, accel=np.array([0.0, 0.0, 1.0]) + rng.normal(0, 0.002, 3),
+        gyro=rng.normal(0, 0.05, 3), mag=STILL, temp=25.0, mag_fresh=True))
+    t += DT
+check("a board merely held still is not called frozen",
+      not [r for r in drain(listener)
+           if r.get("type") == "status" and r.get("stalled")]
+      and not still_board.stalled)
+
+# And it has to clear itself, or a board that was replugged mid-session would
+# go on being reported as broken.
+t = 0.0
+for _ in range(20):
+    frozen._on_sample(Sample(t=t, accel=np.array([0.0, 0.0, 1.0]),
+                             gyro=rng.normal(0, 0.05, 3), mag=STILL,
+                             temp=25.0, mag_fresh=True))
+    t += DT
+recovered = [r for r in drain(listener)
+             if r.get("type") == "status" and r.get("stalled") is False]
+check("and it clears once the readings start changing again",
+      bool(recovered) and not frozen.stalled)
+
+
+# ---------------- the debug panel's control channel ----------------
+# The panel edits the detector that runs here, over a loopback socket. What
+# makes this worth testing is that the panel shows what comes *back*: if a
+# change is dropped or silently ignored, the panel would go on displaying a
+# value nothing is using, which is the exact failure it exists to prevent.
+CONTROL_PORT = 3971
+panel = make_bridge(control_port=CONTROL_PORT)
+check("the control socket opens", panel.open_control())
+
+sender = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+
+
+def command(message):
+    sender.sendto(json.dumps(message).encode("utf-8"),
+                  ("127.0.0.1", CONTROL_PORT))
+    for _ in range(50):
+        panel.poll_control()
+        time.sleep(0.002)
+    return drain(listener)
+
+
+replies = command({"cmd": "get"})
+config = [r for r in replies if r.get("type") == "config"]
+check("asking for the config gets one back", len(config) == 1,
+      f"got {len(config)}")
+if config:
+    for field in ("front", "on_threshold_dps", "min_swing", "min_margin",
+                  "refractory_ms", "sector_offset_deg", "control_port"):
+        check(f"the config reports {field}", field in config[0])
+
+replies = command({"cmd": "set", "front": "+Y", "on_threshold_dps": 90.0,
+                   "min_swing": 0.4})
+config = [r for r in replies if r.get("type") == "config"]
+check("a change is applied and echoed back",
+      bool(config) and config[0]["front"] == "+Y"
+      and config[0]["on_threshold_dps"] == 90.0,
+      str(config[0]) if config else "no config record")
+check("and the running detector really changed with it",
+      panel.detector.min_dominance == 0.4
+      and panel.detector.on_threshold_dps == 90.0,
+      f"{panel.detector.min_dominance} {panel.detector.on_threshold_dps}")
+
+# A lower threshold has to actually accept a flick the old one refused, or the
+# slider is decorative.
+feed(panel, bearing_flick(30.0, peak_dps=100.0))
+check("a flick under the old threshold now counts",
+      len([r for r in drain(listener) if r.get("type") == "flick"]) == 1)
+
+# The panel must not be able to reach anything but tuning: these datagrams
+# arrive on a socket, and a typo redirecting the game's output or reopening a
+# transport is a much worse failure than an ignored setting.
+before_peer = panel.peer
+command({"cmd": "set", "game_port": 9999, "game_host": "10.0.0.1",
+         "rate_hz": 5, "verbose": True})
+check("unknown or dangerous fields are ignored", panel.peer == before_peer,
+      str(panel.peer))
+# Against the stock value rather than a number written out here: what is being
+# checked is that the field did not move, and pinning the literal makes this
+# fail whenever the default legitimately changes, which teaches whoever hits it
+# to edit the test rather than to read it.
+check("and the ones not on the list stay put",
+      panel.config.rate_hz == BridgeConfig().rate_hz,
+      str(panel.config.rate_hz))
+
+command({"cmd": "set", "front": "sideways"})
+check("a front axis that does not exist is refused",
+      panel.config.front == "+Y", panel.config.front)
+
+command({"nonsense": True})
+sender.sendto(b"not json at all", ("127.0.0.1", CONTROL_PORT))
+panel.poll_control()
+check("junk on the control socket does not bring the bridge down", True)
+
+# ---------------- learning the front axis ----------------
+# The one measurement that turns "which way does the board's X axis point"
+# into something a person can answer: flick a direction you can name, and let
+# the bridge work out which axis makes that the answer.
+learner = make_bridge(control_port=CONTROL_PORT + 1)
+learner.config.front = "+Z"                 # deliberately wrong for this flick
+learner._arm_learn(0.0)                     # "I am about to flick straight up"
+drain(listener)
+# bearing_flick builds its pulse in the +X-front frame, so a flick that a +X
+# front calls "up" is the movement being made here.
+feed(learner, bearing_flick(0.0))
+suggestions = [r for r in drain(listener) if r.get("type") == "front_suggestion"]
+check("a learning flick produces a suggestion", len(suggestions) == 1,
+      f"got {len(suggestions)}")
+if suggestions:
+    suggestion = suggestions[0]
+    check("which names the axis that explains the movement",
+          suggestion["front"] == "+X",
+          f"suggested {suggestion['front']} (running {suggestion['current']})")
+    check("with the error it would leave", suggestion["error_deg"] < 5.0,
+          str(suggestion["error_deg"]))
+    check("and every candidate, so a close second is visible",
+          len(suggestion.get("candidates", [])) == 6,
+          str(len(suggestion.get("candidates", []))))
+    check("the axis it rejects is genuinely worse",
+          suggestion["candidates"][-1]["error_deg"] > suggestion["error_deg"])
+
+# ---------------- rest bias ----------------
+BIAS = np.array([0.8, -0.35, 0.2])
+resting = make_bridge(control_port=CONTROL_PORT + 2)
+resting._arm_rest(0.2)
+drain(listener)
+t = 0.0
+for _ in range(80):
+    resting._on_sample(sample(t, BIAS))
+    t += DT
+rest = [r for r in drain(listener) if r.get("type") == "rest"]
+check("measuring at rest reports a bias", len(rest) == 1, f"got {len(rest)}")
+if rest:
+    measured = rest[0]["bias"]
+    check("which is the average the gyro was actually reading",
+          all(abs(measured[i] - BIAS[i]) < 0.01 for i in range(3)),
+          str(measured))
+    check("and is judged against what this part really does",
+          rest[0]["verdict"] == "fair", str(rest[0]["verdict"]))
+    check("the whole window is measured, not the first sample of it",
+          rest[0]["samples"] > 30, str(rest[0]["samples"]))
+
+bad = make_bridge(control_port=CONTROL_PORT + 6)
+bad._arm_rest(0.2)
+drain(listener)
+t = 0.0
+for _ in range(80):
+    bad._on_sample(sample(t, np.array([3.0, -1.0, 0.5])))
+    t += DT
+bad_rest = [r for r in drain(listener) if r.get("type") == "rest"]
+check("a badly drifting gyro reads as poor",
+      bool(bad_rest) and bad_rest[0]["verdict"] == "poor",
+      str(bad_rest[0]["verdict"]) if bad_rest else "none")
+
+quiet = make_bridge(control_port=CONTROL_PORT + 3)
+quiet._arm_rest(0.2)
+drain(listener)
+t = 0.0
+for _ in range(80):
+    quiet._on_sample(sample(t, np.array([0.05, -0.02, 0.01])))
+    t += DT
+quiet_rest = [r for r in drain(listener) if r.get("type") == "rest"]
+check("a well calibrated board reads as good",
+      bool(quiet_rest) and quiet_rest[0]["verdict"] == "good",
+      str(quiet_rest[0]["verdict"]) if quiet_rest else "none")
+
+moved = make_bridge(control_port=CONTROL_PORT + 4)
+moved._arm_rest(0.2)
+drain(listener)
+t = 0.0
+for i in range(80):
+    moved._on_sample(sample(t, np.array([0.0, 0.0, 200.0 if i == 40 else 0.0])))
+    t += DT
+moved_rest = [r for r in drain(listener) if r.get("type") == "rest"]
+check("and a board that was picked up mid-measurement says so, "
+      "rather than saving the movement as calibration",
+      bool(moved_rest) and moved_rest[0]["verdict"] == "moved",
+      str(moved_rest[0]["verdict"]) if moved_rest else "none")
+
+# Writing calibration has to add to what the board already stores, because
+# `cal gyro` replaces it and the measurement was taken with the old one
+# already applied. Getting this backwards would make each run undo the last.
+writer = make_bridge(control_port=CONTROL_PORT + 5)
+writer.last_rest_bias = (0.5, 0.0, -0.25)
+sent = []
+writer._link = type("FakeLink", (), {
+    "send": lambda self, command: sent.append(command),
+    "connected": True,
+})()
+writer._bias_write_pending = True
+writer._on_info("cal.gyro_bias", "1.00000 2.00000 3.00000 dps")
+written = [c for c in sent if c.startswith("cal gyro")]
+check("writing bias adds to what the board already has",
+      bool(written) and written[0].split()[2:5] == ["1.50000", "2.00000", "2.75000"],
+      written[0] if written else "nothing sent")
+check("and saves it, or it would be gone at the next reset",
+      "cal save" in sent, str(sent))
+
+sender.close()
+drain(listener)          # the next test counts datagrams, so start it empty
+
 
 # One datagram per record, so the game never has to reassemble anything.
 big = make_bridge()

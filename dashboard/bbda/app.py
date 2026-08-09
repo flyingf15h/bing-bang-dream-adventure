@@ -1935,11 +1935,16 @@ class Dashboard(QMainWindow):
             bias, scale = self._accel_collector.result()
             self.cal.accel_bias = bias
             self.cal.accel_scale = scale
-            self.accel_result.setText(
+            summary = (
                 f"Bias  {bias[0]:+.4f} {bias[1]:+.4f} {bias[2]:+.4f} g"
                 f"    Scale  {scale[0]:.4f} {scale[1]:.4f} {scale[2]:.4f}"
             )
-            self.accel_result.setStyleSheet(f"color: {theme.STATUS['good']};")
+            rejected = self._accel_collector.rejected
+            self.accel_result.setText(
+                summary if not rejected else summary + "\n" + "\n".join(rejected)
+            )
+            self.accel_result.setStyleSheet(
+                f"color: {theme.STATUS['good' if not rejected else 'serious']};")
             self.autosave_calibration("accelerometer bias and gain")
         else:
             remaining = [

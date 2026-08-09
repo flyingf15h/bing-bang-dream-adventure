@@ -1,0 +1,212 @@
+{
+  "title": "Flick Test",
+  "artist": "-- practice chart, no music --",
+  "audio_filename": "",
+  "bpm": 100.0,
+  "travel_time_ms": 1200,
+  "hold_degrees_per_second": 200.0,
+  "sector_angles": {
+    "1": 60.0,
+    "2": 0.0,
+    "3": 300.0,
+    "4": 240.0,
+    "5": 180.0,
+    "6": 120.0
+  },
+  "total_duration_ms": 31800,
+  "note_count": 32,
+  "notes": [
+    {
+      "time_ms": 3000,
+      "sector": 2,
+      "hand": "right",
+      "type": "flick"
+    },
+    {
+      "time_ms": 4200,
+      "sector": 2,
+      "hand": "right",
+      "type": "flick"
+    },
+    {
+      "time_ms": 5400,
+      "sector": 1,
+      "hand": "right",
+      "type": "flick"
+    },
+    {
+      "time_ms": 6600,
+      "sector": 1,
+      "hand": "right",
+      "type": "flick"
+    },
+    {
+      "time_ms": 7800,
+      "sector": 6,
+      "hand": "left",
+      "type": "flick"
+    },
+    {
+      "time_ms": 9000,
+      "sector": 6,
+      "hand": "left",
+      "type": "flick"
+    },
+    {
+      "time_ms": 10200,
+      "sector": 5,
+      "hand": "left",
+      "type": "flick"
+    },
+    {
+      "time_ms": 11400,
+      "sector": 5,
+      "hand": "left",
+      "type": "flick"
+    },
+    {
+      "time_ms": 12600,
+      "sector": 4,
+      "hand": "left",
+      "type": "flick"
+    },
+    {
+      "time_ms": 13800,
+      "sector": 4,
+      "hand": "left",
+      "type": "flick"
+    },
+    {
+      "time_ms": 15000,
+      "sector": 3,
+      "hand": "right",
+      "type": "flick"
+    },
+    {
+      "time_ms": 16200,
+      "sector": 3,
+      "hand": "right",
+      "type": "flick"
+    },
+    {
+      "time_ms": 17400,
+      "sector": 2,
+      "hand": "right",
+      "type": "flick"
+    },
+    {
+      "time_ms": 18000,
+      "sector": 1,
+      "hand": "right",
+      "type": "flick"
+    },
+    {
+      "time_ms": 18600,
+      "sector": 6,
+      "hand": "left",
+      "type": "flick"
+    },
+    {
+      "time_ms": 19200,
+      "sector": 5,
+      "hand": "left",
+      "type": "flick"
+    },
+    {
+      "time_ms": 19800,
+      "sector": 4,
+      "hand": "left",
+      "type": "flick"
+    },
+    {
+      "time_ms": 20400,
+      "sector": 3,
+      "hand": "right",
+      "type": "flick"
+    },
+    {
+      "time_ms": 21600,
+      "sector": 2,
+      "hand": "right",
+      "type": "flick"
+    },
+    {
+      "time_ms": 22200,
+      "sector": 5,
+      "hand": "left",
+      "type": "flick"
+    },
+    {
+      "time_ms": 22800,
+      "sector": 2,
+      "hand": "right",
+      "type": "flick"
+    },
+    {
+      "time_ms": 23400,
+      "sector": 5,
+      "hand": "left",
+      "type": "flick"
+    },
+    {
+      "time_ms": 24000,
+      "sector": 2,
+      "hand": "right",
+      "type": "flick"
+    },
+    {
+      "time_ms": 24600,
+      "sector": 5,
+      "hand": "left",
+      "type": "flick"
+    },
+    {
+      "time_ms": 25200,
+      "sector": 2,
+      "hand": "right",
+      "type": "flick"
+    },
+    {
+      "time_ms": 25800,
+      "sector": 5,
+      "hand": "left",
+      "type": "flick"
+    },
+    {
+      "time_ms": 27000,
+      "sector": 3,
+      "hand": "right",
+      "type": "flick"
+    },
+    {
+      "time_ms": 27600,
+      "sector": 4,
+      "hand": "left",
+      "type": "flick"
+    },
+    {
+      "time_ms": 28200,
+      "sector": 5,
+      "hand": "left",
+      "type": "flick"
+    },
+    {
+      "time_ms": 28800,
+      "sector": 6,
+      "hand": "left",
+      "type": "flick"
+    },
+    {
+      "time_ms": 29400,
+      "sector": 1,
+      "hand": "right",
+      "type": "flick"
+    },
+    {
+      "time_ms": 30000,
+      "sector": 2,
+      "hand": "right",
+      "type": "flick"
+    }
+  ]
+}

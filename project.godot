@@ -19,6 +19,7 @@ config/icon="res://icon.svg"
 
 TapInputBus="*res://TapInputBus.gd"
 ImuInput="*res://ImuInput.gd"
+ImuSettings="*res://ImuSettings.gd"
 
 [display]
 

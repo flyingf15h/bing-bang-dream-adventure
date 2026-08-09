@@ -51,6 +51,16 @@ class Sample:
     temp: float              # degrees C
     mag_fresh: bool          # False when the magnetometer value was repeated
 
+    #: Host clock (``time.perf_counter``) when the bytes carrying this sample
+    #: reached this process. Paired with ``t`` it is the only way to see how
+    #: long the sample spent in transit, which is a real part of the input
+    #: latency and is invisible from the device timestamp alone -- two samples
+    #: 5 ms apart on the board can arrive together, and if the second one holds
+    #: a flick then it is 5 ms staler than it says it is. Zero when whoever
+    #: built the Sample did not have a host clock to offer, which is what
+    #: replayed and synthetic samples do.
+    host_t: float = 0.0
+
 
 @dataclass
 class Event:
@@ -97,6 +107,8 @@ class Link(QObject):
         # they wrap about every 71 minutes. These track the unwrap.
         self._last_raw_us = 0
         self._wraps = 0
+        #: Host clock at the last chunk of bytes, stamped in :meth:`_feed`.
+        self._arrived = 0.0
 
     # ------------------------------------------------------------------
     # Interface
@@ -129,6 +141,10 @@ class Link(QObject):
 
     def _feed(self, chunk: bytes) -> None:
         """Accept bytes from the transport and emit whole lines."""
+        # Stamped once for the whole chunk rather than per line. A chunk is one
+        # read, so every line in it genuinely did arrive at the same moment --
+        # spreading the stamp across them would be inventing precision.
+        self._arrived = time.perf_counter()
         self._buffer.extend(chunk)
         while b"\n" in self._buffer:
             raw, _, rest = self._buffer.partition(b"\n")
@@ -177,6 +193,7 @@ class Link(QObject):
                 mag=np.array(values[6:9], dtype=float),
                 temp=values[9],
                 mag_fresh=fresh,
+                host_t=self._arrived,
             )
         )
 
@@ -336,7 +353,28 @@ class SerialLink(Link):
     def _read_loop(self) -> None:
         while not self._stop.is_set():
             try:
-                chunk = self._port.read(4096)
+                # Take whatever has arrived, and if nothing has, block for one
+                # byte. Never `read(4096)`, which is what this used to do and
+                # which was quietly the largest source of input latency in the
+                # whole project: pyserial's read returns when it has the count
+                # asked for *or* when the timeout expires, and 4096 bytes is
+                # 48 samples at 200 Hz, so it always waited out the full 0.2 s
+                # and then handed over a fifth of a second of history at once.
+                #
+                # Measured on this board: samples arrived a median of 101 ms
+                # and up to 211 ms after the board timestamped them. None of
+                # that was compensated anywhere -- the flick's `lag_ms` is
+                # computed from device timestamps and cannot see it -- so every
+                # flick was scored against a moment that had already passed by
+                # a randomly chosen tenth of a second. The same measurement
+                # with this read: a median of 0.2 ms, worst case 0.5 ms.
+                #
+                # `in_waiting or 1` is what makes it both immediate and cheap:
+                # with bytes waiting it takes them all in one call, and with
+                # none it sleeps in the driver until one arrives rather than
+                # spinning.
+                waiting = self._port.in_waiting
+                chunk = self._port.read(waiting if waiting else 1)
             except (serial.SerialException, TypeError, AttributeError, OSError) as exc:
                 # A deliberate disconnect closes the port under us, and the
                 # error that causes is not news.

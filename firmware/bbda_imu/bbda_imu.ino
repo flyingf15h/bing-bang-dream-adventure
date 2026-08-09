@@ -114,6 +114,35 @@ class ICM456xxBoard : public ICM456xx {
     return v;
   }
 
+  /* The UI low-pass filters. The vendor's Arduino wrapper never touches
+   * these, so whatever the part resets to is what the whole project has been
+   * running on -- and since a filter's job is to trade delay for smoothness,
+   * "whatever it happened to be" is not a defensible setting for an input
+   * device whose two complaints are delay and smoothness. Exposed so the
+   * choice is made here, deliberately, and can be measured. */
+  int setGyroBandwidth(uint8_t sel) {
+    return inv_imu_set_gyro_ln_bw(
+        &icm_driver, (ipreg_sys1_reg_172_gyro_ui_lpfbw_sel_t)sel);
+  }
+  int setAccelBandwidth(uint8_t sel) {
+    return inv_imu_set_accel_ln_bw(
+        &icm_driver, (ipreg_sys2_reg_131_accel_ui_lpfbw_t)sel);
+  }
+  /* Read them back, so the banner reports what the part is really doing
+   * rather than what this firmware last asked for. */
+  uint8_t gyroBandwidth() {
+    ipreg_sys1_reg_172_t r;
+    if (inv_imu_read_reg(&icm_driver, IPREG_SYS1_REG_172, 1, (uint8_t *)&r) != 0)
+      return 0xFF;
+    return (uint8_t)r.gyro_ui_lpfbw_sel;
+  }
+  uint8_t accelBandwidth() {
+    ipreg_sys2_reg_131_t r;
+    if (inv_imu_read_reg(&icm_driver, IPREG_SYS2_REG_131, 1, (uint8_t *)&r) != 0)
+      return 0xFF;
+    return (uint8_t)r.accel_ui_lpfbw_sel;
+  }
+
   /* Reports the return code of each step the vendor's startAPEX() folds into
    * a single OR-ed result, so a failure can be attributed instead of guessed
    * at. Exposed through the `apexprobe` command. */
@@ -148,11 +177,53 @@ static RunMode    g_run_mode = RUN_STREAM;
 static uint16_t g_out_hz     = 5;      /* print rate, mode dependent  */
 static bool     g_csv_calibrated = false; /* CSV emits raw by default */
 
-/* Sensor configuration mirrors, kept so the banner can report them. */
-static uint16_t g_accel_odr = 200;
+/* Sensor configuration mirrors, kept so the banner can report them.
+ *
+ * 800 Hz rather than the 200 this used to run the gyroscope at, and it is not
+ * about wanting 800 samples a second on the wire -- the stream still leaves at
+ * whatever `rate` says. It is about how old a sample is when it is read.
+ *
+ * Stream mode polls the data registers on a timer of its own, which is not
+ * synchronised to the sensor's conversions in any way. At a 200 Hz ODR the
+ * register holds a value between 0 and 5 ms old, uniformly, and the timestamp
+ * put on it says "now" -- so every sample carries up to 5 ms of timing error
+ * that nothing downstream can see or remove, and consecutive samples carry
+ * *different* amounts of it. At 800 Hz that window is 1.25 ms. The gyroscope
+ * is what times a flick, so this is the cheapest millisecond in the project.
+ *
+ * It also matches what the accelerometer was already doing: startAPEX() forces
+ * the accelerometer to 800 Hz whenever tap, free-fall, low-g or high-g are on,
+ * which is the default, so the 200 in this table has been a fiction on the
+ * accelerometer side for as long as APEX has been enabled. */
+static uint16_t g_accel_odr = 800;
 static uint16_t g_accel_fsr = 16;
-static uint16_t g_gyro_odr  = 200;
+static uint16_t g_gyro_odr  = 800;
 static uint16_t g_gyro_fsr  = 2000;
+
+/* UI low-pass filter selection, as the register's own encoding: 0 is the
+ * filter bypassed and 1..6 divide the ODR by 4, 8, 16, 32, 64 and 128.
+ *
+ * ODR/8 -- 100 Hz at the 800 Hz ODR above -- is chosen rather than either
+ * extreme. Bypassing the filter entirely costs nothing in delay but leaves the
+ * output band open all the way up, and the stream is decimated to `rate` by a
+ * plain poll with no filter of its own, so anything above half of that folds
+ * straight back down into the band a flick is measured in. Filtering hard
+ * instead is the classic mistake for an input device: every millisecond of
+ * group delay is a millisecond the player feels, and a hand-thrown flick has
+ * essentially no content above 20 Hz to be smoothed anyway.
+ *
+ * 100 Hz sits an octave above the fastest thing a wrist does and comfortably
+ * below the 200 Hz Nyquist of the default output rate, which is the whole of
+ * what a filter here is for. */
+static uint8_t g_gyro_bw  = 2;   /* DIV_8 */
+static uint8_t g_accel_bw = 2;   /* DIV_8 */
+
+/* Magnetometer polls per output sample. The compass plays no part in flick
+ * detection -- it is there for heading in the dashboard -- and reading it costs
+ * a further I2C transaction inside the sample tick, which is time the gyro read
+ * is not happening and jitter on the timestamp that follows it. Read one tick
+ * in eight, so at the default rate it still lands near its own 100 Hz ODR. */
+static uint16_t g_mag_divider = 8;
 
 /* Which APEX algorithms are requested. The ICM-45605 (family A1)
  * implements exactly these; bring-to-see and activity/inactivity
@@ -697,6 +768,21 @@ static int startApexFeatures() {
  *   FIFO   - FIFO watermark on INT1, samples drained from the FIFO
  *   WOM    - wake-on-motion on INT1, accelerometer in low-power mode
  */
+/* Push the chosen UI bandwidths into the part.
+ *
+ * After the sensors are started, never before: startAccel()/startGyro() write
+ * the ODR and mode registers, and on this part the filter selection is only
+ * meaningful once the sensor it belongs to is running in low-noise mode.
+ * Failure is reported and survivable -- a wrong filter is a slightly worse
+ * flick, not a dead stream. */
+static void applyBandwidth() {
+  int rc = IMU.setGyroBandwidth(g_gyro_bw) | IMU.setAccelBandwidth(g_accel_bw);
+  if (rc != 0) {
+    outPrintf("NOTICE could not set the UI filter bandwidths (rc=%d); the "
+              "part keeps whatever it had\n", rc);
+  }
+}
+
 static int applyRunMode() {
   int rc = 0;
   detachInterrupt(digitalPinToInterrupt(PIN_IMU_INT1));
@@ -750,12 +836,14 @@ static int applyRunMode() {
         RCSTEP("startAccel", IMU.startAccel(g_accel_odr, g_accel_fsr));
       }
       RCSTEP("startGyro", IMU.startGyro(g_gyro_odr, g_gyro_fsr));
+      applyBandwidth();
       break;
     }
 
     case RUN_FIFO:
       RCSTEP("startAccel", IMU.startAccel(g_accel_odr, g_accel_fsr));
       RCSTEP("startGyro", IMU.startGyro(g_gyro_odr, g_gyro_fsr));
+      applyBandwidth();
       /* Batch frames rather than interrupting per sample. The vendor helper
        * arms this pin as LEVEL-triggered (attachInterrupt ... HIGH); on an
        * ESP32 a level-triggered pin that is still asserted re-enters the ISR
@@ -773,6 +861,27 @@ static int applyRunMode() {
   }
   delay(50);
   return rc;
+}
+
+/* "ODR/8 = 100 Hz", or "bypassed", from the register's own encoding. Static
+ * buffer because it is only ever used to build one line at a time and the two
+ * call sites that use it twice each want two separate strings -- hence the
+ * pair. */
+static const char *bandwidthName(uint8_t sel, uint16_t odr) {
+  static char text[2][32];
+  static uint8_t slot = 0;
+  char *out = text[slot & 1];
+  slot++;
+  if (sel == 0) {
+    snprintf(out, sizeof(text[0]), "bypassed");
+  } else if (sel <= 6) {
+    const uint16_t divider = (uint16_t)(1u << (sel + 1));   /* 1->4 ... 6->128 */
+    snprintf(out, sizeof(text[0]), "ODR/%u = %u Hz", divider,
+             (unsigned)(odr / divider));
+  } else {
+    snprintf(out, sizeof(text[0]), "unreadable");
+  }
+  return out;
 }
 
 /* ------------------------------------------------------------------ */
@@ -803,6 +912,15 @@ static void printBanner() {
     snprintf(buf, sizeof(buf), "%u Hz, +/-%g dps", g_gyro_odr,
              (double)gyroFsrExact(g_gyro_fsr));
     emitInfo("imu.gyro", buf);
+    /* Read back rather than echoed. The point of setting the filters at all is
+     * that nobody knew what they were; printing this firmware's intention
+     * would reproduce exactly that problem one level up. */
+    snprintf(buf, sizeof(buf), "gyro %s, accel %s  (asked for %s / %s)",
+             bandwidthName(IMU.gyroBandwidth(), g_gyro_odr),
+             bandwidthName(IMU.accelBandwidth(), g_accel_odr),
+             bandwidthName(g_gyro_bw, g_gyro_odr),
+             bandwidthName(g_accel_bw, g_accel_odr));
+    emitInfo("imu.filter", buf);
     emitInfo("imu.temp", "on-die, 25 C + raw/128");
     emitInfo("imu.apex.active", g_apex_active
              ? "yes"
@@ -878,13 +996,18 @@ static void printHelp() {
     "  help                       this list\n"
     "  info                       device banner and current configuration\n"
     "  mode pretty|csv|off        output format (csv is what the dashboard uses)\n"
-    "  rate <hz>                  output rate, 1..500\n"
+    "  rate <hz>                  output rate, 1..1000\n"
     "  run stream|fifo|wom        INT1 owner: APEX events, FIFO, or wake-on-motion\n"
     "  csvcal on|off              emit calibrated values on the CSV stream\n"
     "\n"
     "  accel <odr> <fsr>          ODR 1,3,6,12,25,50,100,200,400,800,1600,3200,6400\n"
     "                             FSR 2,4,8,16 (g)\n"
     "  gyro  <odr> <fsr>          FSR 15,31,62,125,250,500,1000,2000 (dps)\n"
+    "  filt gyro|accel|both <n>   UI low-pass: bypass, or ODR/4..ODR/128.\n"
+    "                             Lower dividers filter harder and add delay;\n"
+    "                             bypass is the fastest and the noisiest.\n"
+    "  magdiv <n>                 read the compass one sample in n (it plays no\n"
+    "                             part in flicks and costs time in the tick)\n"
     "  apex <feature> on|off      tilt|ped|tap|r2w|freefall|lowg|highg|all\n"
     "  ped reset                  zero the step counter\n"
     "\n"
@@ -1082,7 +1205,13 @@ static void setOutputMode(OutputMode mode) {
   g_out_mode = mode;
   /* Pick a sensible default rate for the new format; `rate` overrides. */
   if (mode == OUT_PRETTY) g_out_hz = 5;
-  else if (mode == OUT_CSV) g_out_hz = 100;
+  /* 400 rather than 100. A flick lasts 60-150 ms, and the direction it is
+   * reported to have gone is now the integral of the whole stroke -- so the
+   * sample count over that stroke is directly the number of readings the
+   * answer is averaged over. At 100 Hz a fast flick is six samples, which is
+   * not an average of anything; at 400 it is two dozen, and the sensor is
+   * already producing 800 a second whether they are read or not. */
+  else if (mode == OUT_CSV) g_out_hz = 400;
 }
 
 static void handleMagCommand(char *argv[], int argc) {
@@ -1189,6 +1318,31 @@ static void handleCalCommand(char *argv[], int argc) {
 
   if (!dst) { outPrintln(F("ERR cal: unknown subcommand")); return; }
   if (argc < 2 + need) { outPrintf("ERR cal: need %d values\n", need); return; }
+
+  /* The accelerometer gain is the one field here whose plausible range is
+   * known in advance, and it is the one that has actually been corrupted: a
+   * six-position calibration where two captures were the same face divides by
+   * a near-zero span and produces a gain of twenty or more. Stored, it makes
+   * the part read several g while lying still, which quietly disables
+   * everything that finds vertical from gravity and shows up only as flicks
+   * going the wrong way. A part whose sensitivity is out by more than a
+   * quarter is a broken part, not a part needing this much trim, so refusing
+   * it here costs nothing real and closes the hole at the last point before
+   * NVS. */
+  if (tokenEquals(sub, "ascale")) {
+    for (int i = 0; i < need; i++) {
+      const float value = atof(argv[2 + i]);
+      if (!(value > 0.75f && value < 1.25f)) {
+        outPrintf("ERR cal ascale: %g is not a believable gain -- an "
+                  "accelerometer axis reads within a few percent of true, so "
+                  "this came from two calibration positions that were really "
+                  "the same one. Redo the six-position step.\n",
+                  (double)value);
+        return;
+      }
+    }
+  }
+
   for (int i = 0; i < need; i++) dst[i] = atof(argv[2 + i]);
   outPrintln(F("OK"));
 }
@@ -1389,9 +1543,51 @@ static void handleCommand(char *line) {
   } else if (tokenEquals(cmd, "rate")) {
     if (argc < 2) { outPrintln(F("ERR rate: need hz")); return; }
     int hz = atoi(argv[1]);
-    if (hz < 1 || hz > 500) { outPrintln(F("ERR rate: 1..500")); return; }
+    /* Raised from 500. The gyroscope runs at 800 Hz and the ceiling had no
+     * reason to sit below it -- a stream slower than the sensor throws away
+     * samples that were already paid for, and at 400 Hz a 120 ms flick is
+     * resolved by 48 samples instead of 24. */
+    if (hz < 1 || hz > 1000) { outPrintln(F("ERR rate: 1..1000")); return; }
     g_out_hz = (uint16_t)hz;
     outPrintln(F("OK"));
+  } else if (tokenEquals(cmd, "filt")) {
+    /* filt <gyro|accel|both> <bypass|4|8|16|32|64|128> */
+    if (argc < 3) {
+      outPrintln(F("ERR filt: need <gyro|accel|both> <bypass|4|8|16|32|64|128>"));
+      return;
+    }
+    uint8_t sel = 0xFF;
+    if (tokenEquals(argv[2], "bypass") || tokenEquals(argv[2], "off")) {
+      sel = 0;
+    } else {
+      const int divider = atoi(argv[2]);
+      for (uint8_t i = 1; i <= 6; i++) {
+        if (divider == (1 << (i + 1))) { sel = i; break; }
+      }
+    }
+    if (sel == 0xFF) {
+      outPrintln(F("ERR filt: divider must be bypass, 4, 8, 16, 32, 64 or 128"));
+      return;
+    }
+    const bool want_gyro  = tokenEquals(argv[1], "gyro") || tokenEquals(argv[1], "both");
+    const bool want_accel = tokenEquals(argv[1], "accel") || tokenEquals(argv[1], "both");
+    if (!want_gyro && !want_accel) {
+      outPrintln(F("ERR filt: first argument is gyro, accel or both"));
+      return;
+    }
+    int rc = 0;
+    if (want_gyro)  { g_gyro_bw  = sel; rc |= IMU.setGyroBandwidth(sel); }
+    if (want_accel) { g_accel_bw = sel; rc |= IMU.setAccelBandwidth(sel); }
+    if (rc != 0) { outPrintln(F("ERR filt: the part rejected it")); return; }
+    outPrintf("OK gyro %s, accel %s\n",
+              bandwidthName(IMU.gyroBandwidth(), g_gyro_odr),
+              bandwidthName(IMU.accelBandwidth(), g_accel_odr));
+  } else if (tokenEquals(cmd, "magdiv")) {
+    if (argc < 2) { outPrintln(F("ERR magdiv: need a count, 1..64")); return; }
+    int n = atoi(argv[1]);
+    if (n < 1 || n > 64) { outPrintln(F("ERR magdiv: 1..64")); return; }
+    g_mag_divider = (uint16_t)n;
+    outPrintf("OK compass read once every %d samples\n", n);
   } else if (tokenEquals(cmd, "apexprobe")) {
     IMU.apexProbe();
     outPrintln(F("OK"));
@@ -1592,12 +1788,37 @@ void loop() {
   }
 
   static uint32_t next_us = 0;
+  static uint16_t mag_tick = 0;
   const uint32_t period_us = 1000000UL / (g_out_hz ? g_out_hz : 1);
   uint32_t now = micros();
   if ((int32_t)(now - next_us) >= 0) {
-    next_us = now + period_us;
+    /* Advance the schedule from where it *should* have fired, not from now.
+     * Adding the period to `now` folds however late this tick was into the
+     * next one, so a tick delayed by a command or a WiFi flush pushes every
+     * later tick back with it and the stream drifts slow. Anchoring to the
+     * grid keeps the average rate exact; the catch-up guard is for the case
+     * where the loop has fallen so far behind that chasing the grid would
+     * fire a burst of back-to-back samples. */
+    next_us += period_us;
+    if ((int32_t)(now - next_us) >= 0) next_us = now + period_us;
+
     if (g_run_mode != RUN_FIFO) readImuRegisters();
-    readMag();
+    /* Read the gyro and accelerometer first and the compass afterwards. The
+     * timestamp printed below is taken at print time, so whatever is read last
+     * is the freshest -- and it is the gyroscope, not the compass, that has to
+     * be fresh. Decimated as well, so most ticks skip the second transaction
+     * entirely. */
+    if (g_mag_divider <= 1 || (mag_tick % g_mag_divider) == 0) {
+      readMag();
+    } else {
+      /* Say so rather than repeating the last reading as though it were new.
+       * The freshness flag is the whole contract the host has for telling a
+       * repeated magnetometer value from a measured one, and a decimator that
+       * quietly left it true would break that for every reader at once. */
+      g_mag_fresh = false;
+    }
+    mag_tick++;
+
     if (g_out_mode == OUT_CSV) printCsv();
     else if (g_out_mode == OUT_PRETTY) printPretty();
   }

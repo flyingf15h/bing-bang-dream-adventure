@@ -40,6 +40,9 @@ func _ready() -> void:
 	# means reaching for the mouse first.
 	TapInputBus.tap.connect(_on_tap)
 	_build_imu_label()
+	# Also here, not only in game: setting the front axis and the thresholds is
+	# something you do before playing, and doing it here costs no notes.
+	add_child(preload("res://ImuDebugPanel.gd").new())
 
 	_play_intro()
 
@@ -49,7 +52,13 @@ func _build_imu_label() -> void:
 	## running, and an unresponsive title screen is indistinguishable from a
 	## broken one. This says which it is.
 	_imu_label = Label.new()
-	_imu_label.add_theme_font_size_override("font_size", 15)
+	_imu_label.add_theme_font_size_override("font_size", 16)
+	# The title art is a bright, busy illustration and this sits on top of it,
+	# so the text needs to carry its own contrast. Without the outline the
+	# line is there but unreadable, which is worse than absent: the screen
+	# looks like it has no IMU status at all rather than one you can't see.
+	_imu_label.add_theme_constant_override("outline_size", 5)
+	_imu_label.add_theme_color_override("font_outline_color", Color(0.04, 0.03, 0.10, 0.85))
 	_imu_label.set_anchors_preset(Control.PRESET_BOTTOM_WIDE)
 	_imu_label.offset_top = -40.0
 	_imu_label.offset_bottom = -14.0
@@ -57,19 +66,33 @@ func _build_imu_label() -> void:
 	add_child(_imu_label)
 	_refresh_imu_label()
 	ImuInput.link_changed.connect(func(_up: bool) -> void: _refresh_imu_label())
+	ImuInput.board_changed.connect(func(_on: bool) -> void: _refresh_imu_label())
 
 
 func _refresh_imu_label() -> void:
 	if not is_instance_valid(_imu_label):
 		return
-	if ImuInput.link_up:
-		_imu_label.text = "IMU ready — flick the board to start"
-		_imu_label.modulate = Color(0.65, 1.0, 0.75, 0.9)
-	elif not ImuInput.enabled:
+	# Three states, not two. A bridge with no board behind it is the one that
+	# used to read as "IMU ready", which is the worst thing it could have said:
+	# it sends the player off to flick at a game that cannot possibly answer,
+	# and the fault is a cable rather than anything they are doing.
+	if not ImuInput.enabled:
 		_imu_label.text = ""
-	else:
+	elif not ImuInput.link_up:
 		_imu_label.text = "no IMU bridge — run  python dashboard/game_bridge.py"
-		_imu_label.modulate = Color(1.0, 1.0, 1.0, 0.35)
+		_imu_label.modulate = Color(1.0, 0.92, 0.92, 0.85)
+	elif not ImuInput.board_connected:
+		_imu_label.text = "bridge running, no board — " + ImuInput.status_text
+		_imu_label.modulate = Color(1.0, 0.80, 0.45, 1.0)
+	elif ImuInput.board_stalled:
+		# Streaming perfectly and measuring nothing. Said in the imperative
+		# because the fix is specific and unguessable: a reset does not clear
+		# it, only unplugging does.
+		_imu_label.text = "board frozen — unplug it and plug it back in (a reset will not do it)"
+		_imu_label.modulate = Color(1.0, 0.55, 0.55, 1.0)
+	else:
+		_imu_label.text = "IMU ready — flick the board to start"
+		_imu_label.modulate = Color(0.55, 1.0, 0.70, 1.0)
 
 
 func _on_tap(event: TapEvent) -> void:

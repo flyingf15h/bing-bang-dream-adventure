@@ -16,7 +16,9 @@ See dashboard/bbda/gamebridge.py for the wire format and the reasoning.
 from __future__ import annotations
 
 import argparse
+import math
 import sys
+import threading
 import time
 
 from bbda.gamebridge import (
@@ -50,6 +52,71 @@ def list_ports() -> int:
     return 0
 
 
+#: Frames per second the demo animates its fake board at, which is also the
+#: rate a real board's motion records arrive at.
+DEMO_FPS = 30.0
+
+#: How long one lane takes, start of the wind-up to rest again.
+DEMO_PERIOD_S = 0.8
+
+#: How long the swing itself lasts, rise to fall. Around what a hand does, and
+#: comfortably longer than the detector's refractory period so consecutive
+#: simulated flicks are not swallowed as one.
+SIM_SWING_S = 0.5
+
+#: Period for flicks injected into a live board session, longer than the demo's
+#: so there is a clear gap in which the real board's own motion shows through.
+SIM_PERIOD_S = 1.2
+
+
+def gesture_frames(config: BridgeConfig,
+                   period_s: float) -> list[tuple[float, bool]]:
+    """One simulated flick as (swing dps, send the flick now) per frame.
+
+    The swing rises to a peak and falls back to nothing, and the flick is
+    published at the peak -- which is where a real detector puts it, since the
+    bearing is read from the fastest part of the movement. The frames after
+    the swing are the board back at rest, and they matter as much as the swing
+    does: they are what proves the arrow retracts rather than sticking.
+    """
+    frames = max(2, int(round(period_s * DEMO_FPS)))
+    swing_frames = max(2, int(round(SIM_SWING_S * DEMO_FPS)))
+    peak_frame = max(1, swing_frames // 2)
+    peak_dps = config.on_threshold_dps * 2.5
+    return [
+        (peak_dps * math.sin(math.pi * frame / swing_frames)
+         if frame <= swing_frames else 0.0,
+         frame == peak_frame)
+        for frame in range(frames)
+    ]
+
+
+def play_gesture(bridge: GameBridge, config: BridgeConfig, bearing: float,
+                 frames: list[tuple[float, bool]],
+                 mute_board: bool = False) -> None:
+    """Send one simulated gesture in real time, a frame at a time."""
+    swing_s = min(SIM_SWING_S, len(frames) / DEMO_FPS)
+    for swing, is_flick in frames:
+        bridge.poll_control()
+        if mute_board and swing > 0.0:
+            # Hold the board's own motion off the wire for as long as the
+            # simulated swing lasts, so the two do not overwrite each other 30
+            # times a second. Renewed per frame rather than set once, so that
+            # killing the simulator never leaves the real board muted.
+            bridge.mute_motion_until = time.monotonic() + swing_s
+        if is_flick:
+            bridge.send_demo_flick(bearing)
+        if config.motion_hz > 0.0:
+            bridge.send_demo_motion(bearing, swing)
+        time.sleep(1.0 / DEMO_FPS)
+
+
+def lane_bearings(config: BridgeConfig) -> list[float]:
+    """The bearing at the centre of each lane, in order."""
+    return [(config.sector_offset_deg + i * (360.0 / config.sectors)) % 360.0
+            for i in range(config.sectors)]
+
+
 def run_demo(bridge: GameBridge, config: BridgeConfig) -> int:
     """Send a flick into each lane in turn, round and round.
 
@@ -58,25 +125,60 @@ def run_demo(bridge: GameBridge, config: BridgeConfig) -> int:
     lanes, so a demo built on multiples of 60 lands every flick on a boundary,
     hits one lane twice and another never, and looks like a mapping bug when it
     is only an unlucky choice of test angles.
+
+    Each flick is wrapped in a rise and fall of motion records, so this drives
+    the game's IMU arrow the way a hand would: it swings up, the flick fires at
+    the top of the swing, and it settles back. Without that the demo would only
+    exercise the flick half of the link and an arrow that never moved would
+    look like a working one.
     """
     half = 360.0 / (2 * config.sectors)
-    bearings = [config.sector_offset_deg + i * (360.0 / config.sectors)
-                for i in range(config.sectors)]
+    bearings = lane_bearings(config)
     print(f"Demo: flicks to {bridge.peer[0]}:{bridge.peer[1]}, Ctrl-C to stop.")
-    print(f"      {config.sectors} lane centres, {half * 2:.0f} degrees apart.\n")
+    print(f"      {config.sectors} lane centres, {half * 2:.0f} degrees apart.")
+    if config.motion_hz > 0.0:
+        print(f"      plus {DEMO_FPS:.0f} Hz of motion, to move the arrow.")
+    print()
+    bridge.open_control()
     bridge.send_hello("demo", "none")
+    bridge.send_config()
+
+    frames = gesture_frames(config, DEMO_PERIOD_S)
     index = 0
     try:
         while True:
-            bearing = bearings[index % len(bearings)] % 360.0
-            bridge.send_demo_flick(bearing)
+            bearing = bearings[index % len(bearings)]
             print(f"  lane {index % len(bearings) + 1}: bearing {bearing:5.1f} deg")
+            play_gesture(bridge, config, bearing, frames)
             index += 1
-            time.sleep(0.8)
     except KeyboardInterrupt:
         print("\nStopped.")
         bridge.close()
     return 0
+
+
+def simulate_flicks(bridge: GameBridge, config: BridgeConfig,
+                    stop: threading.Event) -> None:
+    """Inject simulated flicks while a real board is streaming.
+
+    For testing the game against real hardware without a free hand: the board
+    is connected, sampling and detecting as usual, and lane after lane is
+    flicked for it. Anything the board itself detects still goes through --
+    only the live motion is taken over, and only for as long as each simulated
+    swing lasts, so picking the board up between them still moves the arrow.
+
+    Run on a daemon thread so Ctrl-C reaches the main loop the way it does
+    without this, and left as a testing aid rather than a menu item: a flick
+    the player did not make is a hit they did not earn.
+    """
+    bearings = lane_bearings(config)
+    frames = gesture_frames(config, SIM_PERIOD_S)
+    index = 0
+    while not stop.is_set():
+        bearing = bearings[index % len(bearings)]
+        print(f"[sim] lane {index % len(bearings) + 1}: bearing {bearing:5.1f} deg")
+        play_gesture(bridge, config, bearing, frames, mute_board=True)
+        index += 1
 
 
 def main() -> int:
@@ -101,39 +203,57 @@ def main() -> int:
         "--host",
         help="board IP for WiFi, e.g. 192.168.1.50 or 192.168.1.50:3333",
     )
+    # Read off BridgeConfig rather than written out again, for the same reason
+    # the tuning defaults below are: a flag whose default has drifted from what
+    # the bridge runs when the flag is absent is worse than no flag at all.
+    stock_rate = BridgeConfig().rate_hz
+
     parser.add_argument("--list", action="store_true", help="list serial ports and exit")
     parser.add_argument("--demo", action="store_true",
                         help="send fake flicks without a board, to test the game")
+    parser.add_argument("--simulate-flicks", action="store_true",
+                        help="with a real board connected, also flick every "
+                             "lane in turn, to test the game hands-free")
 
     parser.add_argument("--game-host", default="127.0.0.1",
                         help="where the game listens (default: %(default)s)")
     parser.add_argument("--game-port", type=int, default=DEFAULT_GAME_PORT,
                         help="game UDP port (default: %(default)s)")
+    parser.add_argument("--control-port", type=int, default=None,
+                        help="where the in-game debug panel sends settings "
+                             "(default: one above --game-port)")
 
     parser.add_argument("--baud", type=int, default=921600,
                         help="serial baud; ignored by native USB CDC (default: %(default)s)")
-    parser.add_argument("--rate", type=int, default=200,
+    parser.add_argument("--rate", type=int, default=stock_rate,
                         help="samples per second to ask the board for (default: %(default)s)")
     parser.add_argument("--raw", action="store_true",
                         help="do not apply the board's stored calibration")
+    parser.add_argument("--motion-hz", type=float, default=30.0,
+                        help="rate for the live records the game's IMU arrow "
+                             "follows; 0 sends none (default: %(default)s)")
 
+    # Every default here comes off BridgeConfig rather than being written out
+    # again, so the flags cannot drift from what the bridge actually runs when
+    # none of them are passed -- which is the usual case.
+    stock = BridgeConfig()
     tuning = parser.add_argument_group("flick tuning")
-    tuning.add_argument("--threshold", type=float, default=150.0,
+    tuning.add_argument("--threshold", type=float, default=stock.on_threshold_dps,
                         help="dps that starts a flick (default: %(default)s)")
-    tuning.add_argument("--swing", type=float, default=0.6,
+    tuning.add_argument("--swing", type=float, default=stock.min_swing,
                         help="0..1 floor on how much of the rotation was a swing "
                              "rather than a roll (default: %(default)s)")
-    tuning.add_argument("--margin", type=float, default=0.15,
+    tuning.add_argument("--margin", type=float, default=stock.min_margin,
                         help="0..1 floor on distance from a sector boundary "
                              "(default: %(default)s)")
-    tuning.add_argument("--refractory", type=float, default=200.0,
+    tuning.add_argument("--refractory", type=float, default=stock.refractory_ms,
                         help="ms to ignore after a flick, which is what stops the "
                              "return stroke registering (default: %(default)s)")
-    tuning.add_argument("--sectors", type=int, default=6,
+    tuning.add_argument("--sectors", type=int, default=stock.sectors,
                         help="lanes the game has (default: %(default)s)")
-    tuning.add_argument("--sector-offset", type=float, default=30.0,
+    tuning.add_argument("--sector-offset", type=float, default=stock.sector_offset_deg,
                         help="degrees the sector grid is rotated by (default: %(default)s)")
-    tuning.add_argument("--front", default="+X",
+    tuning.add_argument("--front", default=stock.front,
                         choices=["+X", "-X", "+Y", "-Y", "+Z", "-Z"],
                         help="board axis pointing away from the player "
                              "(default: %(default)s)")
@@ -151,6 +271,8 @@ def main() -> int:
     config = BridgeConfig(
         game_host=args.game_host,
         game_port=args.game_port,
+        control_port=(args.control_port if args.control_port is not None
+                      else args.game_port + 1),
         rate_hz=args.rate,
         calibrated=not args.raw,
         on_threshold_dps=args.threshold,
@@ -160,6 +282,7 @@ def main() -> int:
         sectors=args.sectors,
         sector_offset_deg=args.sector_offset,
         front=args.front,
+        motion_hz=args.motion_hz,
         verbose=not args.quiet,
     )
     bridge = GameBridge(config)
@@ -220,11 +343,22 @@ def main() -> int:
     if attempt:
         print(f"Connected on {target} after {attempt} retries.\n")
 
+    bridge.open_control()
+
+    stop_simulator = threading.Event()
+    if args.simulate_flicks:
+        print("Simulating a flick into each lane in turn, alongside the board.")
+        print("Real flicks still count; only the live arrow is taken over.\n")
+        threading.Thread(target=simulate_flicks,
+                         args=(bridge, config, stop_simulator),
+                         daemon=True).start()
+
     try:
         _serve(bridge, args, host, udp_port)
     except KeyboardInterrupt:
         print("\nStopping.")
     finally:
+        stop_simulator.set()
         bridge.close()
     return 0
 
@@ -246,7 +380,12 @@ def _serve(bridge: GameBridge, args, host: str | None, udp_port: int) -> None:
     quiet_since: float | None = None
 
     while True:
-        time.sleep(0.5)
+        # Short enough that the in-game panel feels connected to what it is
+        # editing: this is how often a slider being dragged is acted on, and a
+        # half-second lag there reads as the control having no effect.
+        time.sleep(0.05)
+        bridge.poll_control()
+        bridge.expire_bias_write()
         now = time.monotonic()
 
         if args.monitor and bridge.connected and now - last_monitor >= 0.5:
@@ -254,15 +393,42 @@ def _serve(bridge: GameBridge, args, host: str | None, udp_port: int) -> None:
             threshold = bridge.config.on_threshold_dps
             peak = bridge.peak_dps_seen
             bridge.peak_dps_seen = 0.0
+            transport = bridge.peak_transport_ms
+            bridge.peak_transport_ms = 0.0
             bar = "#" * min(40, int(40.0 * peak / max(threshold * 2.0, 1.0)))
             verdict = "over" if peak >= threshold else "under"
+            # Transport delay alongside the rate, because they are the two
+            # halves of "did that flick register properly": whether it was
+            # strong enough to be seen at all, and how stale it was by the time
+            # it was. A board can be perfectly detectable and still arrive too
+            # late to score, and nothing else in this tool would say so.
             print(f"  |gyro| peak {peak:7.1f} dps  {verdict:<5} "
-                  f"{threshold:.0f}  |{bar:<40}|")
+                  f"{threshold:.0f}  |{bar:<40}|  wire {transport:5.1f} ms")
 
         if not bridge.connected:
             print("[link] board gone -- looking for it again")
+            print("       NOTHING YOU DO WITH THE BOARD WILL REGISTER until "
+                  "it is back.")
+            # Repeated rather than said once. The wait is open-ended, and with
+            # --simulate-flicks scrolling past it, a single line an hour ago is
+            # exactly how someone ends up flicking at a board that is not
+            # plugged in and concluding that flick detection is broken.
+            waiting_since = now
+            said = now
             while True:
-                time.sleep(2.0)
+                # Polled while waiting too: the panel is the most likely place
+                # someone is watching from when the board has gone away, and a
+                # panel whose controls stop responding looks like a second
+                # fault on top of the first.
+                for _ in range(20):
+                    time.sleep(0.1)
+                    bridge.poll_control()
+                if time.monotonic() - said >= 10.0:
+                    said = time.monotonic()
+                    print(f"[link] still no board after "
+                          f"{said - waiting_since:.0f}s. On an ESP32-S3 the "
+                          f"port is provided by the running sketch, so a reset "
+                          f"or a power-only cable makes it vanish like this.")
                 try:
                     link, target = make_link(
                         port=args.port, host=host, baud=args.baud,

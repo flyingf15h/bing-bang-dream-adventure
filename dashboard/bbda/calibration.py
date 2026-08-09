@@ -559,6 +559,9 @@ class AccelSixPointCollector:
         self.captured: dict[str, np.ndarray] = {}
         self._active: str | None = None
         self._buffer: list[np.ndarray] = []
+        #: Sentences about axes whose gain was refused by :meth:`result`, ready
+        #: to show. Empty when every axis was measured properly.
+        self.rejected: list[str] = []
 
     def start(self, position_name: str) -> None:
         self._active = position_name
@@ -587,10 +590,32 @@ class AccelSixPointCollector:
     def complete(self) -> bool:
         return all(name in self.captured for name, *_ in SIX_POSITIONS)
 
+    #: How far a per-axis gain may sit from 1.0 and still be believed.
+    #:
+    #: An accelerometer's sensitivity error is a trim, not a discovery: this
+    #: part is specified to a couple of percent and a bad one is out by ten.
+    #: Anything past this did not measure a real gain -- it measured two
+    #: captures that were not actually a half turn apart, which is what
+    #: happens when a face gets recorded twice, and it is silent because the
+    #: arithmetic is perfectly happy with it.
+    #:
+    #: A board found in the wild carried 26.3 and 74.8 on two axes from
+    #: exactly that. Nothing complained; the accelerometer simply read 3.7 g
+    #: lying still, every reading that depended on gravity was wrong, and the
+    #: only visible symptom was that flicks went in odd directions.
+    MAX_GAIN_ERROR = 0.25
+
     def result(self) -> tuple[np.ndarray, np.ndarray]:
-        """Return (bias in g, per-axis scale factor)."""
+        """Return (bias in g, per-axis scale factor).
+
+        An axis whose two captures do not describe a proper half turn keeps a
+        gain of exactly 1.0 and is listed in :attr:`rejected`, because leaving
+        the axis uncorrected is wrong by a couple of percent while trusting the
+        measurement is wrong by a factor of twenty.
+        """
         bias = np.zeros(3)
         scale = np.ones(3)
+        self.rejected = []
         for axis, index in _AXIS_INDEX.items():
             up = down = None
             for name, ax, sign, _ in SIX_POSITIONS:
@@ -603,9 +628,21 @@ class AccelSixPointCollector:
             if up is None or down is None:
                 continue
             bias[index] = (up + down) / 2.0
+            # Turning the board over swaps which way gravity pulls along this
+            # axis, so the two readings must be about 2 g apart. Anything else
+            # means they were not taken from opposite faces.
             half_span = (up - down) / 2.0
-            if abs(half_span) > 1e-6:
-                scale[index] = 1.0 / half_span
+            gain = 1.0 / half_span if abs(half_span) > 1e-6 else 0.0
+            if abs(half_span - 1.0) > self.MAX_GAIN_ERROR:
+                self.rejected.append(
+                    f"{axis.upper()}: the two captures are {abs(up - down):.2f} g "
+                    f"apart and turning the board over should make them 2 g "
+                    f"apart, so one of the {axis.upper()} positions was not "
+                    f"held the way it was asked for. Redo them; the gain that "
+                    f"would have been stored is {gain:.1f}, and 1.0 is right."
+                )
+                continue
+            scale[index] = gain
         return bias, scale
 
 

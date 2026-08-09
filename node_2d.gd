@@ -21,6 +21,10 @@ const TapEvent = preload("res://TapInputBus.gd").TapEvent
 @export var slide_width_scale: float = 1.5
 @export var show_numbers: bool = false
 
+## The arrow that shows what the board is doing. Off with the I key, or here
+## for a recording where it would only be in the way.
+@export var show_imu_arrow: bool = true
+
 @export var win_perfect: float = 45.0
 @export var win_near: float = 110.0
 @export var slide_grace_ms: float = 120.0
@@ -93,6 +97,19 @@ var finish_ui: float = -1.0
 var font_bold: FontVariation
 var font_heavy: FontVariation
 
+## --- the IMU arrow ---------------------------------------------------------
+## Where the board is pointed and how hard it is being swung, smoothed for
+## drawing. None of this is read by scoring: the arrow is a display of an input
+## that has already been judged elsewhere, so a bug in here cannot cost a note.
+var imu_angle: float = NAN      # smoothed heading, game convention
+var imu_reach: float = 0.0      # 0..1, swing rate against the flick threshold
+var imu_flash: float = 0.0      # 1.0 the moment a flick lands, then decays
+var imu_refused: float = 0.0    # 1.0 when a movement was refused, then decays
+var imu_refused_text: String = ""
+## Whether the last flick landed on a note. Everything that is not a scoring
+## hit draws grey, so that colour on screen carries exactly one meaning.
+var imu_last_hit: bool = false
+
 
 func _ready() -> void:
 	centre = get_viewport_rect().size * 0.5
@@ -112,13 +129,19 @@ func _ready() -> void:
 
 	player = AudioStreamPlayer.new()
 	add_child(player)
-	var stream = load(audio_path)
-	if stream == null:
-		load_error = "Cannot load audio %s - Godot needs WAV / OGG / MP3" % audio_path
-		push_error(load_error)
-	else:
-		player.stream = stream
-		player.finished.connect(func(): finished = true)
+	# An empty path is a chart that has no music, not a chart whose music is
+	# missing -- the practice map is exactly that. Without the distinction it
+	# would come up under a red error saying its silence was a fault. With no
+	# stream the clock simply runs off _process's delta and the chart ends at
+	# total_duration_ms.
+	if audio_path != "":
+		var stream = load(audio_path)
+		if stream == null:
+			load_error = "Cannot load audio %s - Godot needs WAV / OGG / MP3" % audio_path
+			push_error(load_error)
+		else:
+			player.stream = stream
+			player.finished.connect(func(): finished = true)
 
 	for i in 52:
 		sparks.append(_new_spark(randf()))
@@ -128,6 +151,16 @@ func _ready() -> void:
 	get_viewport().size_changed.connect(_on_resize)
 	TapInputBus.tap.connect(_on_tap)
 
+	# Straight from ImuInput rather than from _on_tap, so the arrow reacts to
+	# every flick the board sent -- including the ones _on_tap turns away while
+	# paused, in autoplay or before the song starts. Those are exactly the
+	# moments someone is checking whether the board is working at all.
+	ImuInput.flick_received.connect(_on_imu_flick)
+	ImuInput.flick_refused.connect(_on_imu_refused)
+	show_imu_arrow = ImuSettings.show_arrow
+	ImuSettings.changed.connect(func() -> void: show_imu_arrow = ImuSettings.show_arrow)
+	add_child(preload("res://ImuDebugPanel.gd").new())
+
 
 func _on_resize() -> void:
 	centre = get_viewport_rect().size * 0.5
@@ -136,6 +169,8 @@ func _on_resize() -> void:
 
 
 func _setup_video() -> void:
+	if video_path == "":
+		return          # a chart with no video of its own; the ring is the whole screen
 	video = VideoStreamPlayer.new()
 	var vs = load(video_path)
 	if vs == null:
@@ -344,6 +379,8 @@ func _tick_visuals(delta: float) -> void:
 		if ring_flash.has(s):
 			ring_flash[s] = maxf(0.0, float(ring_flash[s]) - delta * 3.5)
 
+	_tick_imu(delta)
+
 	var prog: float = _progress()
 	for sp in sparks:
 		sp["phase"] = float(sp["phase"]) + delta * float(sp["speed"])
@@ -351,6 +388,83 @@ func _tick_visuals(delta: float) -> void:
 		if float(sp["x"]) > prog + 0.02 or float(sp["x"]) < 0.0:
 			sp["x"] = randf() * maxf(0.02, prog)
 			sp["y"] = randf_range(-1.0, 1.0)
+
+
+## How much of the flick threshold the board has to be swinging through before
+## the arrow turns to follow it. Below this the bridge is reporting the shake of
+## a hand holding something still, and a direction taken from that is noise --
+## an arrow that spun on the spot whenever the board was at rest would read as
+## a broken sensor rather than a steady one.
+const IMU_STEER_FLOOR: float = 0.08
+
+## What everything that is not a registered hit is drawn in. Kept light enough
+## to read over the video, and deliberately not one of the lane colours.
+const IMU_GREY := Color(0.78, 0.76, 0.85)
+
+## Fallback for the flick threshold if the bridge has not said what it uses.
+## Only reached when motion records arrive without one, which no current bridge
+## does; it keeps the arrow scaled sensibly rather than dividing by zero.
+const IMU_THRESHOLD_FALLBACK_DPS: float = 150.0
+
+
+func _tick_imu(delta: float) -> void:
+	imu_flash = maxf(0.0, imu_flash - delta * 2.6)
+	# Slower than the flick's, because this one has to be read rather than just
+	# noticed: it carries a line of text saying what to change.
+	imu_refused = maxf(0.0, imu_refused - delta * 0.55)
+
+	# The reach is how close the swing is to counting as a flick, so a full
+	# length arrow means "that would have registered". This is the part that
+	# answers the question a player actually asks when a flick does not land --
+	# whether they flicked too gently or in the wrong direction -- and the two
+	# look completely different here: a short arrow in the right place, or a
+	# long one pointing somewhere else.
+	var target: float = 0.0
+	if ImuInput.link_up and ImuInput.motion_supported:
+		var threshold: float = ImuInput.flick_threshold_dps
+		if threshold <= 0.0:
+			threshold = IMU_THRESHOLD_FALLBACK_DPS
+		target = clampf(ImuInput.live_swing_dps / threshold, 0.0, 1.0)
+
+		if target > IMU_STEER_FLOOR and not is_nan(ImuInput.live_angle_deg):
+			if is_nan(imu_angle):
+				imu_angle = ImuInput.live_angle_deg
+			else:
+				# Round the short way, so a swing across the 0/360 seam does
+				# not send the arrow the long way round the ring.
+				imu_angle = fposmod(rad_to_deg(lerp_angle(
+					deg_to_rad(imu_angle), deg_to_rad(ImuInput.live_angle_deg),
+					minf(1.0, delta * 20.0))), 360.0)
+
+	imu_reach += (target - imu_reach) * minf(1.0, delta * 14.0)
+
+
+func _on_imu_flick(record: Dictionary) -> void:
+	if not record.has("bearing"):
+		return
+	# Snap rather than ease. The flick's own bearing is measured over the whole
+	# gesture and is what scoring used; the smoothed heading is an approximation
+	# of it that lags by a frame or two. Showing the arrow anywhere but on the
+	# lane that was hit would make a correct hit look like a mis-aimed one.
+	imu_angle = ImuInput.game_angle_of(float(record["bearing"]))
+	imu_flash = 1.0
+	imu_refused = 0.0
+
+
+func _on_imu_refused(record: Dictionary) -> void:
+	## Show a movement that was seen and not counted.
+	##
+	## Nothing at all is the one response that cannot be read: a flick that was
+	## rejected and a board that is unplugged both produce silence, and a
+	## player cannot tell which they are looking at. So a refusal gets its own
+	## mark -- deliberately not the flick's, since it did not score.
+	if record.has("bearing"):
+		imu_angle = ImuInput.game_angle_of(float(record["bearing"]))
+	imu_refused = 1.0
+	imu_refused_text = String(record.get("detail", ""))
+	# Whatever the last flick did, this movement scored nothing, and the
+	# colour rules key off that flag rather than off which record was newest.
+	imu_last_hit = false
 
 
 func _new_spark(x: float) -> Dictionary:
@@ -405,7 +519,13 @@ func _update_notes() -> void:
 				_award(n, "PERFECT")
 			continue
 
-		if String(n["state"]) == "wait" and lead < -win_near / 1000.0:
+		# A note is not given up on until the widest window still open on it has
+		# closed. Without this the flick's own window would be a fiction: the
+		# note it was reaching for is already marked MISS by the time a flick
+		# judged 150 ms late arrives, and widening the window would have changed
+		# nothing. Keys are unaffected -- _try_hit() still refuses anything past
+		# win_near, so all this moves is the moment the miss is recorded.
+		if String(n["state"]) == "wait" and lead < -win_near * _imu_window_scale() / 1000.0:
 			_finish(n, "MISS")
 			continue
 
@@ -427,16 +547,36 @@ func _update_notes() -> void:
 				_popup(n, "PERFECT", COL_PERFECT)
 
 
-func _judge_for(err_ms: float) -> String:
+func _judge_for(err_ms: float, scale: float = 1.0) -> String:
 	var a: float = absf(err_ms)
-	if a <= win_perfect:
+	if a <= win_perfect * scale:
 		return "PERFECT"
-	if a <= win_near:
+	if a <= win_near * scale:
 		return "EARLY" if err_ms < 0.0 else "LATE"
 	return ""
 
 
-func _try_hit(sector: int, lag_ms: float = 0.0) -> void:
+## How much the timing windows stretch for a flick, as the panel has it set.
+##
+## 1.0 for everything else, and 1.0 for a flick too when there is no bridge --
+## the widened window is a concession to a gesture that has to be measured, and
+## applying it when nothing is being measured would just make the keyboard
+## easier for no reason.
+func _imu_window_scale() -> float:
+	if not (ImuInput.enabled and ImuInput.link_up):
+		return 1.0
+	return clampf(ImuSettings.timing_scale, 1.0, 4.0)
+
+
+## How far apart two angles are, in degrees, the short way round.
+func _angle_gap(a_deg: float, b_deg: float) -> float:
+	return absf(rad_to_deg(angle_difference(deg_to_rad(a_deg), deg_to_rad(b_deg))))
+
+
+func _try_hit(sector: int, lag_ms: float = 0.0) -> bool:
+	## Returns whether the input landed on a note. The IMU arrow uses that to
+	## decide whether to take a lane's colour, so "grey" and "coloured" on
+	## screen mean exactly "did not score" and "scored".
 	# lag_ms backdates the hit to when the input really happened. A key or a
 	# click is known the instant it arrives and passes zero; a flick is only
 	# recognised once it is over, so it arrives about half a gesture late and
@@ -452,19 +592,104 @@ func _try_hit(sector: int, lag_ms: float = 0.0) -> void:
 			best = n
 			best_err = err
 	if best.is_empty():
-		return
+		return false
 	var verdict: String = _judge_for(best_err)
 	if verdict == "":
-		return
+		return false
+	_accept_hit(best, verdict)
+	return true
 
-	ring_flash[sector] = 1.0
-	if float(best["hold"]) > 0.0:
-		best["state"] = "holding"
-		best["release_at"] = -1.0
-		_award(best, verdict)
-		_popup(best, verdict, _verdict_colour(verdict))
+
+func _accept_hit(n: Dictionary, verdict: String, whole: bool = false) -> void:
+	## Award a note that an input has been matched to. The lane that lights up
+	## is the note's own, not the one the input was aimed at: with the flick
+	## tolerance wide enough to reach a neighbour, those are not always the
+	## same, and the note is the one that was actually hit.
+	##
+	## `whole` settles the note outright instead of opening a hold on it, and is
+	## what a flick always passes. A flick is an impulse: it is over before the
+	## bridge can even name it, so there is nothing left to hold with and no way
+	## to follow a note that sweeps round the ring. Left to open a hold, every
+	## drag note a flick landed on would be awarded its first half and then
+	## dropped as a MISS the moment the grace ran out -- the input would look
+	## like it had scored and the note would still count against the player.
+	## So a flick takes the note in one go, for its full value.
+	ring_flash[int(n["sector"])] = 1.0
+	if float(n["hold"]) > 0.0 and not whole:
+		n["state"] = "holding"
+		n["release_at"] = -1.0
+		_award(n, verdict)
+		_popup(n, verdict, _verdict_colour(verdict))
 	else:
-		_finish(best, verdict)
+		_finish(n, verdict, whole)
+
+
+## Cost of being aimed one degree wide, in milliseconds of timing error.
+##
+## This is what decides between two notes a flick could plausibly have meant:
+## the one it was aimed straight at but slightly early, or the one on time in
+## the lane next door. At 1.5 a whole lane of aiming error -- 60 degrees --
+## trades against 90 ms of timing error, so a note in the lane the flick really
+## pointed at wins unless it is most of a window away. Raise it and the
+## tolerance narrows in practice without the slider moving; drop it to zero and
+## a flick takes whatever note is nearest in time within reach, which feels
+## like the game guessing.
+const AIM_COST_MS_PER_DEG: float = 1.5
+
+
+func _try_hit_direction(angle_deg: float, lag_ms: float) -> bool:
+	## Score an input that named a direction rather than a lane -- a flick.
+	##
+	## Separate from _try_hit() rather than folded into it, because a flick is
+	## a different kind of measurement from a key press and the difference is
+	## not a detail. A key names a lane exactly and instantly; a flick names a
+	## bearing measured off a hand-thrown gesture, good to a lane at best, and
+	## timed from the peak of a rotation rather than from an edge. Snapping it
+	## to the nearest lane and judging it on the keyboard's windows throws that
+	## away: a flick 35 degrees wide of a note reads as a miss even though
+	## there was nothing else it could have meant, and the player has no way to
+	## tell that from having flicked too gently.
+	##
+	## So the flick reaches every note within `lane_tolerance_deg` of where it
+	## went, on windows widened by `timing_scale`, and takes the one that best
+	## explains it -- nearest in time, with being aimed wide counted against a
+	## note at AIM_COST_MS_PER_DEG. Both limits are in the debug panel, and both
+	## can be turned back down to exactly the old behaviour.
+	##
+	## Exactly one note, always. The loop below picks a single best match and
+	## `_accept_hit` is told to settle it outright, so a flick can neither open
+	## a hold it has no way to sustain nor be spread across two notes at once.
+	## One flick is one note: that is the whole rule, and it is what makes a
+	## flick's result something a player can predict.
+	var at: float = song_time - lag_ms / 1000.0
+	var scale: float = _imu_window_scale()
+	var near: float = win_near * scale
+	var tolerance: float = clampf(ImuSettings.lane_tolerance_deg, 30.0, 90.0)
+
+	var best: Dictionary = {}
+	var best_cost: float = 1e9
+	var best_err: float = 0.0
+	for n in notes:
+		if String(n["state"]) != "wait":
+			continue
+		var aim: float = _angle_gap(angle_deg, float(n["angle"]))
+		if aim > tolerance:
+			continue
+		var err: float = (at - float(n["t"])) * 1000.0
+		if absf(err) > near:
+			continue
+		var cost: float = absf(err) + aim * AIM_COST_MS_PER_DEG
+		if cost < best_cost:
+			best = n
+			best_cost = cost
+			best_err = err
+	if best.is_empty():
+		return false
+	var verdict: String = _judge_for(best_err, scale)
+	if verdict == "":
+		return false
+	_accept_hit(best, verdict, true)
+	return true
 
 
 func _on_tap(event: TapEvent) -> void:
@@ -474,12 +699,23 @@ func _on_tap(event: TapEvent) -> void:
 		_results_tap(event)
 		return
 	if autoplay or paused or not started:
+		# Nothing can be hit here, so nothing was: said out loud because the
+		# arrow reads this to decide whether to draw a flick at all, and a stale
+		# `true` would show a flick thrown at a paused song as a scoring hit.
+		if event.has_direction():
+			imu_last_hit = false
 		return
 
 	# A flick from the IMU names its direction outright: the board is not
 	# anywhere on screen, so there is no position to read an angle from.
 	if event.has_direction():
-		_try_hit(_nearest_sector(event.direction_deg), event.lag_ms)
+		var hit := _try_hit_direction(event.direction_deg, event.lag_ms)
+		TapInputBus.report_judgement(event.source, hit)
+		# Recorded here rather than in _on_imu_flick because only this knows
+		# whether a note was there. The ordering is what makes it usable:
+		# ImuInput reports to the bus before it emits flick_received, so by the
+		# time the arrow is told about the flick, this has already run.
+		imu_last_hit = hit
 		return
 
 	var offset: Vector2 = event.screen_position - centre
@@ -513,20 +749,25 @@ func _results_tap(event: TapEvent) -> void:
 			get_tree().change_scene_to_file("res://Start.tscn")
 
 
-func _finish(n: Dictionary, verdict: String) -> void:
+func _finish(n: Dictionary, verdict: String, whole: bool = false) -> void:
 	n["state"] = "done"
 	n["judged"] = verdict
 	n["hit_at"] = song_time
-	_award(n, verdict)
+	_award(n, verdict, whole)
 	_popup(n, verdict, _verdict_colour(verdict))
 
 
-func _award(n: Dictionary, verdict: String) -> void:
+func _award(n: Dictionary, verdict: String, whole: bool = false) -> void:
+	## `whole` pays a hold note out in one award rather than the two it is
+	## normally split into. Only a flick passes it, and it has to: a flick
+	## settles the note on the spot, so the second award -- the one the hold's
+	## release would have earned -- is never coming, and without this the note
+	## would silently be worth half of what the score total was computed from.
 	counts[verdict] = int(counts.get(verdict, 0)) + 1
 	if verdict == "MISS":
 		combo = 0
 		return
-	var awards: float = 2.0 if float(n["hold"]) > 0.0 else 1.0
+	var awards: float = 2.0 if float(n["hold"]) > 0.0 and not whole else 1.0
 	var share: float = (_note_weight(n) / awards) / total_weight
 	var factor: float = 1.0 if verdict == "PERFECT" else 0.5
 	score_f += share * SCORE_POOL * factor
@@ -584,6 +825,20 @@ func _unhandled_input(event: InputEvent) -> void:
 				return
 			KEY_N:
 				show_numbers = not show_numbers
+				return
+			KEY_I:
+				# Through the settings, so the key and the panel's checkbox
+				# are the same switch and it survives the next run.
+				ImuSettings.show_arrow = not ImuSettings.show_arrow
+				ImuSettings.save_settings()
+				ImuSettings.changed.emit()
+				return
+			KEY_O:
+				# Next to I on purpose: that one hides the arrow entirely, this
+				# one leaves only the swings that registered as flicks.
+				ImuSettings.arrow_flicks_only = not ImuSettings.arrow_flicks_only
+				ImuSettings.save_settings()
+				ImuSettings.changed.emit()
 				return
 			KEY_BRACKETLEFT:
 				audio_offset_ms -= 5.0
@@ -880,6 +1135,10 @@ func _draw() -> void:
 
 	if wipe < 1.0:
 		_draw_playfield()
+		# Under the notes on purpose: it lives in the middle of the ring, which
+		# is where every note is born, and a note that a player is about to hit
+		# must never be the thing that gets covered up.
+		_draw_imu_arrow()
 		if not finished:
 			_draw_notes()
 		_draw_popups()
@@ -936,6 +1195,138 @@ func _draw_playfield() -> void:
 			var lp := centre + v * (radius + 34.0)
 			draw_string(font_bold, lp - Vector2(6, -7), str(sect), 0, -1, 20,
 				Color(tint.r, tint.g, tint.b, 0.85))
+
+
+func _draw_imu_arrow() -> void:
+	## A 2D arrow in the middle of the ring showing the board in the hand.
+	##
+	## It points where the board is being swung, grows with how hard, and
+	## flashes down the lane a flick landed in. Drawn in the same angle
+	## convention and from the same centre as the lanes themselves, so "the
+	## arrow points at lane 3" and "the flick hit lane 3" are the same
+	## statement -- which is what makes it a check on the mapping and not just
+	## decoration.
+	##
+	## Only shown while the bridge is actually feeding the game. A permanent
+	## arrow stuck at rest would tell a mouse player their board was connected.
+	if not show_imu_arrow or not ImuInput.enabled or not ImuInput.link_up:
+		return
+	if not ImuInput.board_connected:
+		return          # the bridge is talking, but not about a board
+	if is_nan(imu_angle):
+		return
+
+	# Flicks only: draw movements the detector accepted, and nothing else.
+	#
+	# A different question from the colour rule below. That one is about
+	# scoring -- did that flick land on a note. This one is about detection:
+	# was that swing strong enough and clean enough to be sent as an input at
+	# all. So it keys off the flick arriving, not off whether there was a note
+	# where it went, and what it removes is everything that is not a flick --
+	# the live arrow tracking every wobble of an unsteady board, the rest dot,
+	# and the mark for a movement that was refused.
+	var flicks_only: bool = ImuSettings.arrow_flicks_only
+	if flicks_only and imu_flash <= 0.01:
+		return
+
+	# Squared, so a flick reads as a strike that fades rather than a light
+	# being switched off: most of the brightness goes in the first fifth of a
+	# second and the tail is long enough to see where it pointed.
+	var pulse: float = imu_flash * imu_flash
+	var refused: float = imu_refused * imu_refused
+	var reach: float = maxf(imu_reach, maxf(pulse, refused * 0.8))
+	if flicks_only:
+		# The flick's own fade, and nothing of how hard the board happens to
+		# still be swinging afterwards. imu_flash rather than its square keeps
+		# the arrow above the vanishing threshold for as long as it is drawn.
+		reach = maxf(pulse, imu_flash)
+	if refused > 0.01 and not flicks_only:
+		_draw_imu_refusal(refused)
+	if reach < 0.01:
+		# Still board, no flick: a dot, so the arrow has somewhere to grow from
+		# and its absence still means "no board" rather than "not moving".
+		draw_circle(centre, 3.0, Color(1, 1, 1, 0.22))
+		return
+
+	var v := _vec(imu_angle)
+	var side := Vector2(-v.y, v.x)
+
+	# The lane's own colour, so the arrow says which lane it would hit without
+	# needing a number: right hand lanes pink, left hand lanes blue, exactly as
+	# the notes arriving in them are coloured.
+	#
+	# Except that colour is reserved for a flick that actually scored. Live
+	# movement is not a hit, a refusal is not a hit, and a well-aimed flick
+	# into an empty lane is not a hit either -- all three draw grey. It makes
+	# the screen answer "did that count" at a glance, which is the question
+	# being asked over and over while a board is being set up.
+	var lane: int = _nearest_sector(imu_angle)
+	var tint: Color = R_OUTER if lane <= 3 else L_OUTER
+	if ImuSettings.colour_only_hits and not (imu_last_hit and imu_flash > 0.0):
+		tint = IMU_GREY
+	var col: Color = tint.lerp(Color(1, 1, 1), 0.35 + 0.45 * pulse)
+	# The floor is high enough to stay readable over the brightest frames of
+	# the video behind it. A half-swing that fades into the background would
+	# leave the arrow only visible at the two extremes -- rest and flick -- and
+	# the whole point of it is the range in between.
+	var alpha: float = minf(0.95, 0.30 + 0.45 * reach + 0.25 * pulse)
+
+	var r0: float = radius * 0.09
+	var r1: float = radius * (0.17 + 0.40 * reach)
+	var head: float = 13.0 + 11.0 * reach
+	var half_w: float = 7.0 + 5.5 * reach
+	var tip := centre + v * r1
+	var neck := centre + v * maxf(r0, r1 - head)
+
+	# A wide, faint pass under a narrow bright one: the glow keeps the arrow
+	# readable over the video without the shaft itself having to be thick
+	# enough to hide notes behind it.
+	draw_line(centre + v * r0, neck,
+		Color(tint.r, tint.g, tint.b, alpha * 0.34), 10.0 + 9.0 * reach)
+	draw_line(centre + v * r0, neck,
+		Color(col.r, col.g, col.b, alpha), 2.6 + 2.6 * reach)
+	draw_colored_polygon(PackedVector2Array([
+		tip, neck + side * half_w, neck - side * half_w]),
+		Color(col.r, col.g, col.b, alpha))
+	draw_circle(centre, 3.0 + 3.0 * reach,
+		Color(col.r, col.g, col.b, minf(0.9, alpha + 0.15)))
+
+	# At full reach the swing is past the threshold, so a flick in this
+	# direction would be accepted. Marking the lane it would go to is what
+	# turns "flick harder" from guesswork into something you can aim.
+	if imu_reach > 0.98:
+		draw_polyline(_arc_line(radius, float(sector_angle[lane]), 13.0),
+			Color(1, 1, 1, 0.30), 2.0)
+
+	if pulse > 0.01:
+		# The flick itself, thrown down its lane to the rim. White for a hit,
+		# grey for one that scored nothing -- same rule as the shaft.
+		var streak := Color(1, 1, 1)
+		if ImuSettings.colour_only_hits and not imu_last_hit:
+			streak = IMU_GREY
+		var strength: float = clampf(ImuInput.last_strength, 0.0, 1.0)
+		var flick_end: float = radius * (0.62 + 0.30 * strength)
+		draw_line(tip, centre + v * flick_end,
+			Color(streak.r, streak.g, streak.b, 0.55 * pulse), 2.0 + 4.0 * pulse)
+		draw_circle(centre + v * flick_end, 4.0 + 9.0 * pulse,
+			Color(streak.r, streak.g, streak.b, 0.45 * pulse))
+
+
+func _draw_imu_refusal(refused: float) -> void:
+	## A dashed ring and the bridge's own sentence, for a movement that was
+	## seen and not counted. Grey rather than a lane colour, because the point
+	## is precisely that no lane was chosen.
+	var col := Color(0.85, 0.80, 0.90, 0.30 + 0.45 * refused)
+	_dotted_circle(radius * 0.30, col, 6.0, 7.0, 2.0)
+	if imu_refused_text == "":
+		return
+	var size: int = 14
+	var w: float = font_bold.get_string_size(imu_refused_text, 0, -1, size).x
+	var at := Vector2(centre.x - w * 0.5, centre.y + radius * 0.30 + 26.0)
+	draw_string_outline(font_bold, at, imu_refused_text, 0, -1, size, 5,
+		Color(0.02, 0.01, 0.06, 0.75 * refused))
+	draw_string(font_bold, at, imu_refused_text, 0, -1, size,
+		Color(1.0, 0.86, 0.86, 0.35 + 0.55 * refused))
 
 
 func _draw_notes() -> void:
@@ -1070,7 +1461,7 @@ func _draw_hud(vp: Vector2) -> void:
 		draw_string(font_bold, Vector2(vp.x - 28 - lw, cpos.y + 20), "COMBO", 0, -1, 15,
 			Color(ccol.r, ccol.g, ccol.b, 0.75))
 
-	var hint := "A S D / J K L    SPACE pause   R restart   F autoplay   ESC title   , . speed %.1fx   [ ] ; ' latency %+.0fms" % [speed_mult, audio_offset_ms]
+	var hint := "A S D / J K L    SPACE pause   R restart   F autoplay   I imu arrow   ESC title   , . speed %.1fx   [ ] ; ' latency %+.0fms" % [speed_mult, audio_offset_ms]
 	draw_string(font_bold, Vector2(24, vp.y - 16), hint, 0, -1, 14, Color(1, 1, 1, 0.40))
 
 	if autoplay:

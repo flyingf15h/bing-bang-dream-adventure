@@ -39,6 +39,7 @@ dashboard/game_bridge.py   feeds IMU flicks to the game, over USB or WiFi
 dashboard/tests/       self-checks for the maths (no hardware needed)
 ImuInput.gd            game-side UDP listener for those flicks (autoload)
 ImuTest.tscn           diagnostic screen for the IMU link
+test_flicks.json       practice chart: 32 slow notes, no music, for tuning flicks
 docs/USAGE.md          everything the board and dashboard can do
 docs/CALIBRATION.md    calibration + axis-alignment guide (also shown in-app)
 docs/GAME_INPUT.md     playing by flicking the board, and fixing it when it stops
@@ -75,7 +76,18 @@ cd dashboard
 python game_bridge.py                       # over USB, finds the board itself
 python game_bridge.py --host 192.168.1.50   # over WiFi instead
 python game_bridge.py --demo                # no board: fake flicks, to test the game
+python game_bridge.py --simulate-flicks     # real board, faked flicks, hands free
 ```
+
+An arrow in the middle of the ring shows where the board is being swung and how
+hard, so a flick that does not land says which of the two reasons it was. `I`
+hides it. Colour means the flick hit a note; everything else is grey.
+
+Tick **IMU debug** on the title screen for the setup panel: link and board
+state, live bearing and lane, a helper that works out the front axis from one
+flick you name the direction of, sensitivity sliders, gyro bias measurement,
+and settings that save themselves and can be exported and imported. It retunes
+the running bridge live.
 
 `docs/GAME_INPUT.md` covers setup over either transport, the diagnostic screen
 (`ImuTest.tscn`), tuning, and the ESP32-S3 USB CDC traps.
@@ -128,6 +140,37 @@ Measured on the board over USB CDC at 921600 baud, sitting still:
 | NVS calibration | survives save / read-back / clear |
 | Magnetometer self-test | X -52, Y -56, Z -46 LSB (see note below) |
 | Dashboard against the board | 17/17 live checks pass, fusion level to ~1 degree |
+
+### Input latency and direction, measured
+
+The flick path was measured end to end rather than reasoned about, and two of
+the four numbers below were large enough to be the whole problem.
+
+| Check | Before | After |
+|---|---|---|
+| Sample arrival delay, median | 101 ms | **0.2 ms** |
+| Sample arrival delay, worst | 211 ms | **0.5 ms** |
+| Detection lag, 120 ms flick | 60 ms | **45 ms** |
+| Direction error, 25 dps of gyro noise | 3.23° rms | **0.96° rms** |
+| Direction error, board rolled 25° in the hand | 25° | **≤1.1°** |
+| Stream rate | 200 Hz, gyro ODR 200 Hz | **400 Hz, gyro ODR 800 Hz** |
+| Gyro noise at rest (400 Hz, calibrated) | — | 0.055 dps sigma per axis |
+
+The arrival delay was the host reading the serial port with `read(4096)`
+against a 0.2 s timeout, so it waited out the timeout every time and then
+handed over a fifth of a second of samples at once. Nothing compensated for it
+because every timestamp in a flick record is the *board's* and they are all
+equally stale — the delay is only visible by comparing the two clocks, which
+nothing did. See `docs/GAME_INPUT.md`.
+
+**A stored calibration fault was found and fixed in passing.** The board's
+`cal.accel_scale` held `26.28, 74.83, 1.004` — per-axis accelerometer gains
+that should be about 1.0 — from a six-position calibration where two of the
+positions were really the same face. The part read **3.70 g lying still**.
+Nothing complained: the six-position solver accepted any non-zero span, the
+firmware stored whatever it was sent, and the only symptom was flicks going in
+odd directions. All three now refuse it, the last of them by name. It reads
+0.999 g.
 
 **The magnetometer self-test is marginal, not clean.** The datasheet's pass
 window is -50..-1 LSB on every axis; this part reads -52, -56 and -46. All

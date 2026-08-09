@@ -223,6 +223,142 @@ for _ in range(2000):
         got = r
 check("gyro noise does not trigger", got is None)
 
+
+# ---------------- Direction against gravity, not against the board ----------
+#
+# The board is held in a hand and a hand holds things crooked. These check the
+# claim the levelled frame is there for: that rolling the board about the axis
+# it points along does not change which way a flick is reported to have gone.
+def bearing_detector(level: bool = True):
+    return FlickDetector(
+        sector_map=flick_bearing_map(6, 30.0),
+        frame=flick_frame("+X"),
+        min_dominance=0.2,
+        min_margin=0.0,
+        level_with_gravity=level,
+    )
+
+
+def flick_upward_while_rolled(roll_deg, peak_dps=400.0, duration_s=0.12):
+    """A flick that physically goes straight up, from a board held crooked.
+
+    ``roll_deg`` rotates the board about its own front axis, which is the way
+    a wrist naturally cants whatever it is holding. Straight up in the world is
+    then ``(0, sin, cos)`` in board axes, and the turn that sends the front
+    there is ``front x up``.
+    """
+    s = math.sin(math.radians(roll_deg))
+    c = math.cos(math.radians(roll_deg))
+    up_body = np.array([0.0, s, c])
+    axis = np.cross(np.array([1.0, 0.0, 0.0]), up_body)
+    n = int(duration_s / DT)
+    return up_body, [axis * peak_dps * math.sin(math.pi * i / n) for i in range(n)]
+
+
+def run_flick(detector, accel, pulses, settle=40):
+    t = 0.0
+    out = None
+    for _ in range(60):                     # let the vertical be learned
+        detector.update(t, STILL, accel); t += DT
+    for g in pulses:
+        r = detector.update(t, g, accel); t += DT
+        if r:
+            out = r
+    for _ in range(settle):
+        r = detector.update(t, STILL, accel); t += DT
+        if r:
+            out = r
+    return out
+
+
+def bearing_error(got, expected):
+    if got is None:
+        return None
+    return abs((got.bearing_deg - expected + 180.0) % 360.0 - 180.0)
+
+
+ok = True
+worst = 0.0
+detail = []
+for roll in (0.0, 10.0, 20.0, 30.0, 45.0):
+    accel, pulses = flick_upward_while_rolled(roll)
+    error = bearing_error(run_flick(bearing_detector(True), accel, pulses), 0.0)
+    if error is None or error > 3.0:
+        ok = False
+    if error is not None:
+        worst = max(worst, error)
+        detail.append(f"{roll:.0f}deg->{error:.1f}")
+check("a flick straight up reads as up however the board is rolled", ok,
+      "  ".join(detail) + f"   worst {worst:.1f} deg")
+
+# And the same measurement with levelling off, which is what it used to do:
+# the reported direction simply follows the grip, degree for degree.
+accel, pulses = flick_upward_while_rolled(30.0)
+unlevelled = run_flick(bearing_detector(False), accel, pulses)
+check("without it the reported direction follows the grip instead",
+      unlevelled is not None and bearing_error(unlevelled, 0.0) > 25.0,
+      f"off by {bearing_error(unlevelled, 0.0):.0f} deg with a 30 deg roll"
+      if unlevelled else "no flick")
+
+# A 30 degree grip error against 60 degree lanes is half a lane, so this is not
+# a rounding detail -- it is the flick landing next door.
+check("which is enough to put the flick in the wrong lane",
+      unlevelled is not None
+      and unlevelled.sector.index != run_flick(
+          bearing_detector(True), accel, pulses).sector.index)
+
+
+# ---------------- The direction is the stroke, not one sample of it ---------
+#
+# The peak sample carries the full sensor noise; the integral of thirty of them
+# carries about a fifth of it. Same flick, same noise, both detectors: the
+# levelled integrating one has to be the steadier of the two or there is no
+# reason for it to exist.
+rng = np.random.default_rng(20260808)
+NOISE_DPS = 25.0
+
+stroke_errors = []
+sample_errors = []
+for trial in range(24):
+    accel, pulses = flick_upward_while_rolled(0.0)
+    noisy = [g + rng.normal(scale=NOISE_DPS, size=3) for g in pulses]
+
+    integrated = run_flick(bearing_detector(True), accel, noisy)
+    if integrated is not None:
+        stroke_errors.append(bearing_error(integrated, 0.0))
+        # What the old detector would have said: the same frame, but read off
+        # the single fastest sample rather than off the whole stroke.
+        peak_bearing = integrated.frame.bearing_deg(integrated.peak_vector)
+        sample_errors.append(
+            abs((peak_bearing - 0.0 + 180.0) % 360.0 - 180.0))
+
+stroke_rms = math.sqrt(sum(e * e for e in stroke_errors) / max(1, len(stroke_errors)))
+sample_rms = math.sqrt(sum(e * e for e in sample_errors) / max(1, len(sample_errors)))
+check("integrating the stroke beats reading its fastest sample",
+      len(stroke_errors) > 20 and stroke_rms < sample_rms,
+      f"{stroke_rms:.2f} deg rms against {sample_rms:.2f}")
+check("and lands inside three degrees on a noisy flick",
+      stroke_rms < 3.0, f"{stroke_rms:.2f} deg rms over {len(stroke_errors)} flicks")
+
+
+# ---------------- The return stroke is not part of the flick ----------------
+#
+# Flick up and the hand brings the board back down, and that return is a real
+# rotation the other way. Integrated into the same event it cancels the flick
+# it is measuring; the detector has to have finished before it starts.
+accel, up_pulses = flick_upward_while_rolled(0.0)
+_, down_pulses = flick_upward_while_rolled(180.0)
+returned = run_flick(bearing_detector(True), accel,
+                     up_pulses + [p * 0.6 for p in down_pulses], settle=10)
+check("a flick followed straight back by its return still reads as up",
+      returned is not None and bearing_error(returned, 0.0) < 5.0,
+      f"got {returned.bearing_deg:.1f} deg" if returned else "no flick")
+check("and it reports before the return stroke, not after it",
+      returned is not None
+      and returned.duration_ms < len(up_pulses) * DT * 1000.0,
+      f"{returned.duration_ms:.0f} ms of a {len(up_pulses) * DT * 1000.0:.0f} ms "
+      f"outward stroke" if returned else "")
+
 # ---------------- Flip detection ----------------
 det = FlipDetector()
 t = 0.0
