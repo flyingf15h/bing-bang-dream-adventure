@@ -13,5 +13,5 @@
 <img width=90% alt="image" src="https://github.com/user-attachments/assets/6856caf3-e814-4170-a9eb-1257b985db98" />
 
 ### Leaderboard 
-<img width=50% alt="image" src="https://github.com/user-attachments/assets/3498af87-1977-4f82-af06-008c83f14767" />
+<img width=90% alt="image" src="https://github.com/user-attachments/assets/3498af87-1977-4f82-af06-008c83f14767" />
 
