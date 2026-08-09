@@ -1,6 +1,16 @@
-# Playing the game by flicking the board
+# Demo
+<img width=90% alt="image" src="https://github.com/user-attachments/assets/60197b6f-13b8-43c3-ab1e-5cd978b65b20" />
 
-The rhythm game takes six directions. Flick the board up-and-right and the
+<img width=45% alt="image" src="https://github.com/user-attachments/assets/1a9cd251-4646-421f-840c-63d1d7461880" />
+
+<img width=45% alt="image" src="https://github.com/user-attachments/assets/ba1901ba-3d48-42c2-ab56-feaaa6430755" />
+
+<img width=90% alt="image" src="https://github.com/user-attachments/assets/6856caf3-e814-4170-a9eb-1257b985db98" />
+
+
+# Gameplay
+
+Bing bang dream adventure takes six directions. Flick the board up-and-right and the
 note in the upper-right lane is hit, the same as clicking there with the mouse
 or pressing its key. This is how that works, how to set it up over either
 transport, and what to do when a flick does not land.
