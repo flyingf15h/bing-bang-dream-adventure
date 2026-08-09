@@ -9,7 +9,6 @@
 <link href="https://fonts.googleapis.com/css2?family=M+PLUS+Rounded+1c:wght@400;500;700;800;900&display=swap" rel="stylesheet">
 <style>
   :root{
-    /* pulled from the title screen: pale blue on the left, lavender on the right */
     --sky:#c9dcf5;
     --lilac:#d5cbee;
     --blue:#5b8de8;
@@ -33,9 +32,43 @@
     background-attachment:fixed;
   }
 
-  /* loose sparkle marks, the same motif as the star on the wordmark */
   .spark{position:fixed;pointer-events:none;opacity:.5;z-index:0}
   .spark svg{display:block}
+
+  .chibiSlot{
+    position:fixed;pointer-events:none;user-select:none;z-index:1;
+    transform:translate(-50%,-50%);
+  }
+
+  .chibiSlot img{
+    display:block;
+
+    width:min(260px, calc((100vw - 880px) / 2));
+    height:auto;
+    filter:drop-shadow(0 10px 18px rgba(90,100,170,.20));
+    animation:bob 6s ease-in-out infinite;
+  }
+
+  @keyframes bob{
+    0%,100%{transform:translateY(0) rotate(var(--tilt,0deg))}
+    50%{transform:translateY(-12px) rotate(var(--tilt,0deg))}
+  }
+
+  /* midpoint of the left column, and of the right */
+  .chibiSlot.left {left:calc((100vw - 820px) / 4)}
+  .chibiSlot.right{left:calc(100vw - (100vw - 820px) / 4)}
+
+  /* evenly spaced down the page, 30% apart */
+  .chibiSlot.s1{top:20%}
+  .chibiSlot.s2{top:50%}
+  .chibiSlot.s3{top:80%}
+  .chibiSlot.s1 img{--tilt:6deg;animation-delay:-2.4s}
+  .chibiSlot.s2 img{--tilt:-7deg;animation-delay:-.6s}
+  .chibiSlot.s3 img{--tilt:-4deg;animation-delay:-4.1s}
+
+  /* the side columns vanish on narrow screens, and so should the stickers */
+  @media(max-width:1180px){.chibiSlot{display:none}}
+  @media(prefers-reduced-motion:reduce){.chibiSlot img{animation:none}}
 
   .wrap{position:relative;z-index:2;max-width:820px;margin:0 auto;padding:38px 20px 80px}
 
@@ -219,6 +252,10 @@
 </style>
 </head>
 <body>
+
+<div class="chibiSlot right s1" aria-hidden="true"><img src="assets/bestresult.png" alt=""></div>
+<div class="chibiSlot left  s2" aria-hidden="true"><img src="assets/badresult.png"  alt=""></div>
+<div class="chibiSlot right s3" aria-hidden="true"><img src="assets/goodresult.png" alt=""></div>
 
 <div class="spark" style="top:12%;left:6%">
   <svg width="30" height="30" viewBox="0 0 24 24" fill="#ffffff"><path d="M12 0l2.6 8.4L23 11l-8.4 2.6L12 22l-2.6-8.4L1 11l8.4-2.6z"/></svg>
@@ -436,16 +473,11 @@ function setLive(on, label){
   $('liveText').textContent = label;
 }
 
-/* ---------------- player name ---------------- */
 $('playerName').addEventListener('input', async e => {
   playerName = e.target.value.trim().slice(0, 18);
   await store.set(NAME_KEY, playerName);
 });
 
-/* ------------------------------------------------------------------
-   Liveness.  Any of the three sync paths below can be the one that works,
-   so they all report in here rather than each owning the indicator.
------------------------------------------------------------------- */
 let lastOkAt = 0;
 
 function markLive(label){
@@ -457,12 +489,6 @@ setInterval(() => {
   if (lastOkAt && Date.now() - lastOkAt > 9000) setLive(false, 'offline');
 }, 2000);
 
-/* ------------------------------------------------------------------
-   Auto-sync, path 1: plain fetch.  Works when the page is served over a
-   local web server from the same folder as scores.json (for example
-   `python -m http.server` in the project directory).  Opened straight off
-   the filesystem this is blocked, which is what paths 2 and 3 are for.
------------------------------------------------------------------- */
 async function pollFetch(){
   try {
     const res = await fetch('scores.json?t=' + Date.now(), {cache: 'no-store'});
@@ -471,17 +497,9 @@ async function pollFetch(){
     markLive('live');
     await handleIncoming(Array.isArray(data) ? data : [data], 'scores.json');
   } catch (e) {
-    // silent: path 3 may still be carrying the load
   }
 }
 
-/* ------------------------------------------------------------------
-   Auto-sync, path 2: script tag.  This is the one that works for a page
-   opened as file://, where fetch and the File System Access API are both
-   unavailable because the origin is opaque.  Loading a script has no such
-   restriction, so scores.js is re-injected on a timer with a cache-busting
-   query and the global it defines is read on load.
------------------------------------------------------------------- */
 let scriptBusy = false;
 
 function pollScript(){
@@ -501,11 +519,6 @@ function pollScript(){
   document.head.appendChild(s);
 }
 
-/* ------------------------------------------------------------------
-   Auto-sync, path 3: File System Access API.  Point at scores.json once and
-   the handle is re-read whenever its timestamp changes.  Chromium only, and
-   only when the page is served over http(s) -- file:// pages do not get it.
------------------------------------------------------------------- */
 let watchHandle = null;
 let lastMod = 0;
 
