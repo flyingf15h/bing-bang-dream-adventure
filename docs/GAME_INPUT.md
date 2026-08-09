@@ -6,9 +6,10 @@
 ### Intro Screen
 <img width=90% alt="image" src="https://github.com/user-attachments/assets/1a9cd251-4646-421f-840c-63d1d7461880" />
 
-### Results
+### Beatmap Selection 
 <img width=90% alt="image" src="https://github.com/user-attachments/assets/ba1901ba-3d48-42c2-ab56-feaaa6430755" />
 
+### Results
 <img width=90% alt="image" src="https://github.com/user-attachments/assets/6856caf3-e814-4170-a9eb-1257b985db98" />
 
 ### Leaderboard 
