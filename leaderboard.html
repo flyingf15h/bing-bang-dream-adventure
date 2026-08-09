@@ -3,324 +3,403 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>BING BING RHYTHM WAR — Leaderboard</title>
+<title>Leaderboard</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@500;700;900&family=Share+Tech+Mono&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=M+PLUS+Rounded+1c:wght@400;500;700;800;900&display=swap" rel="stylesheet">
 <style>
   :root{
-    --bg-deep:#02040f;
-    --bg-mid:#070d24;
-    --violet:#6f7bff;
-    --violet-dim:#3a4a9f;
-    --violet-soft:#8fa6ff;
-    --cyan:#5ee9f0;
-    --panel-brd:rgba(126,152,240,.40);
-    --panel-bg:rgba(96,128,210,.055);
-    --panel-bg-hi:rgba(120,155,235,.11);
-    --ink:#e6ecff;
-    --ink-dim:#8ea0cc;
+    --sky:#c9dcf5;
+    --lilac:#d5cbee;
+    --blue:#5b8de8;
+    --blue-deep:#3f6dd0;
+    --violet:#8b6fd6;
+    --ink:#3d4270;
+    --ink-soft:#7b81a8;
+    --card:rgba(255,255,255,.72);
+    --card-line:#c3c0e4;
   }
   *{box-sizing:border-box;margin:0;padding:0}
 
   body{
     min-height:100vh;
-    font-family:'Share Tech Mono',ui-monospace,'Cascadia Mono','Courier New',monospace;
+    font-family:'M PLUS Rounded 1c',system-ui,'Segoe UI',sans-serif;
     color:var(--ink);
     background:
-      radial-gradient(ellipse 130% 70% at 50% -12%, #113a7a 0%, transparent 58%),
-      radial-gradient(ellipse 80% 50% at 12% 8%, #0d5f78 0%, transparent 52%),
-      radial-gradient(ellipse 95% 60% at 82% 96%, #3b2a8c 0%, transparent 55%),
-      radial-gradient(ellipse 70% 45% at 40% 108%, #0a4a72 0%, transparent 50%),
-      linear-gradient(180deg,var(--bg-mid) 0%,var(--bg-deep) 62%,#01020a 100%);
+      radial-gradient(ellipse 70% 55% at 88% 12%, rgba(198,178,240,.55) 0%, transparent 60%),
+      radial-gradient(ellipse 60% 50% at 8% 88%, rgba(168,205,245,.5) 0%, transparent 58%),
+      linear-gradient(115deg,var(--sky) 0%,#d2d6f2 48%,var(--lilac) 100%);
     background-attachment:fixed;
-    position:relative;
-    overflow-x:hidden;
   }
 
-  /* perspective grid + scanlines: the retro layer */
-  /* slow-drifting grid, cyan-leaning */
-  body::before{
-    content:'';position:fixed;inset:-60px;pointer-events:none;z-index:0;
-    background-image:
-      linear-gradient(rgba(88,170,255,.13) 1px,transparent 1px),
-      linear-gradient(90deg,rgba(88,170,255,.13) 1px,transparent 1px);
-    background-size:46px 46px;
-    mask-image:radial-gradient(ellipse 82% 68% at 50% 38%,#000 22%,transparent 76%);
-    -webkit-mask-image:radial-gradient(ellipse 82% 68% at 50% 38%,#000 22%,transparent 76%);
-    animation:drift 14s linear infinite;
-  }
-  @keyframes drift{from{background-position:0 0}to{background-position:0 46px}}
+  .spark{position:fixed;pointer-events:none;opacity:.5;z-index:0}
+  .spark svg{display:block}
 
-  /* horizon glow across the lower third */
-  .horizon{
-    position:fixed;left:-10%;right:-10%;bottom:16%;height:1px;z-index:1;
-    pointer-events:none;
-    background:linear-gradient(90deg,transparent,rgba(110,220,255,.55),rgba(150,140,255,.5),transparent);
-    box-shadow:0 0 34px 7px rgba(70,160,255,.20);
-    opacity:.75;
-  }
-  body::after{
-    content:'';position:fixed;inset:0;pointer-events:none;z-index:60;
-    background:repeating-linear-gradient(0deg,rgba(0,0,0,.20) 0 1px,transparent 1px 3px);
-    opacity:.42;
+  .chibiSlot{
+    position:fixed;pointer-events:none;user-select:none;z-index:1;
+    transform:translate(-50%,-50%);
   }
 
-  .wrap{position:relative;z-index:2;max-width:900px;margin:0 auto;padding:34px 20px 70px}
+  .chibiSlot img{
+    display:block;
 
-  /* ---------- header ---------- */
-  header{position:relative;display:flex;align-items:center;justify-content:center;
-         min-height:74px;margin-bottom:8px}
-  h1{
-    font-family:'Orbitron','Share Tech Mono',monospace;
-    font-weight:900;font-size:clamp(26px,5.2vw,46px);
-    letter-spacing:.16em;text-align:center;
-    background:linear-gradient(180deg,#fff 0%,#a9d8ff 48%,#7d8ce0 100%);
-    -webkit-background-clip:text;background-clip:text;color:transparent;
-    filter:drop-shadow(0 0 16px rgba(90,170,255,.55));
-  }
-  .sub{
-    text-align:center;color:var(--ink-dim);font-size:12px;letter-spacing:.32em;
-    margin-top:-2px;margin-bottom:26px;text-transform:uppercase;
-  }
-  #addBtn{
-    position:absolute;right:0;top:50%;transform:translateY(-50%);
-    font-family:'Orbitron',monospace;font-weight:700;font-size:12px;letter-spacing:.14em;
-    color:var(--ink);cursor:pointer;
-    padding:11px 17px;border-radius:11px;
-    border:1px solid var(--panel-brd);
-    background:linear-gradient(180deg,rgba(110,150,235,.24),rgba(80,110,190,.10));
-    box-shadow:0 0 0 1px rgba(255,255,255,.04) inset,0 4px 18px rgba(70,40,150,.35);
-    transition:.18s;
-  }
-  #addBtn:hover{
-    border-color:var(--violet-soft);
-    background:linear-gradient(180deg,rgba(120,180,255,.40),rgba(90,120,205,.20));
-    box-shadow:0 0 22px rgba(90,170,255,.45);transform:translateY(-50%) translateY(-1px);
+    width:min(260px, calc((100vw - 880px) / 2));
+    height:auto;
+    filter:drop-shadow(0 10px 18px rgba(90,100,170,.20));
+    animation:bob 6s ease-in-out infinite;
   }
 
-  /* ---------- column labels ---------- */
+  @keyframes bob{
+    0%,100%{transform:translateY(0) rotate(var(--tilt,0deg))}
+    50%{transform:translateY(-12px) rotate(var(--tilt,0deg))}
+  }
+
+  /* midpoint of the left column, and of the right */
+  .chibiSlot.left {left:calc((100vw - 820px) / 4)}
+  .chibiSlot.right{left:calc(100vw - (100vw - 820px) / 4)}
+
+  /* evenly spaced down the page, 30% apart */
+  .chibiSlot.s1{top:20%}
+  .chibiSlot.s2{top:50%}
+  .chibiSlot.s3{top:80%}
+  .chibiSlot.s1 img{--tilt:6deg;animation-delay:-2.4s}
+  .chibiSlot.s2 img{--tilt:-7deg;animation-delay:-.6s}
+  .chibiSlot.s3 img{--tilt:-4deg;animation-delay:-4.1s}
+
+  /* the side columns vanish on narrow screens, and so should the stickers */
+  @media(max-width:1180px){.chibiSlot{display:none}}
+  @media(prefers-reduced-motion:reduce){.chibiSlot img{animation:none}}
+
+  .wrap{position:relative;z-index:2;max-width:820px;margin:0 auto;padding:38px 20px 80px}
+
+  /* ---------------- header ---------------- */
+  header{
+    display:flex;flex-direction:column;align-items:center;gap:12px;
+    text-align:center;margin-bottom:28px;
+  }
+
+  .wordmark{
+    display:block;height:clamp(52px,11vw,100px);width:auto;
+    filter:drop-shadow(0 4px 0 rgba(139,111,214,.22))
+           drop-shadow(0 10px 16px rgba(80,100,180,.22));
+  }
+
+  /* ---------------- player name ---------------- */
+  /* ---------------- controls ---------------- */
+  .controlBar{
+    display:flex;align-items:center;gap:9px;flex-wrap:wrap;justify-content:center;
+  }
+
+  .nameCard{
+    display:flex;align-items:center;gap:8px;height:40px;
+    padding:0 10px 0 14px;border-radius:999px;
+    background:linear-gradient(138deg,rgba(255,255,255,.8),rgba(224,230,252,.6));
+    border:1.5px solid rgba(255,255,255,.9);
+    box-shadow:0 2px 0 rgba(163,157,214,.24),0 4px 10px rgba(90,105,175,.1);
+  }
+  .nameCard label{font-size:10px;font-weight:800;letter-spacing:.12em;
+    text-transform:uppercase;color:var(--ink-soft)}
+  #playerName{
+    font-family:inherit;font-weight:800;font-size:13px;color:var(--ink);
+    padding:5px 11px;border-radius:999px;width:126px;text-align:center;
+    border:1.5px solid rgba(163,157,214,.38);background:rgba(255,255,255,.9);
+    outline:none;transition:border-color .15s,box-shadow .15s;
+  }
+  #playerName:focus{border-color:var(--blue);box-shadow:0 0 0 2px rgba(91,141,232,.18)}
+
+  .btn{
+    flex:0 0 auto;white-space:nowrap;
+    display:inline-flex;align-items:center;height:40px;
+    font-family:inherit;font-weight:800;font-size:13px;
+    color:#4c4a86;cursor:pointer;
+    padding:0 20px;border:0;border-radius:999px;
+    background:#dcdcf7;
+    box-shadow:0 2px 0 rgba(158,158,215,.42),0 4px 10px rgba(120,130,195,.15),
+               0 1px 0 rgba(255,255,255,.9) inset;
+    letter-spacing:.02em;
+    transition:transform .12s,box-shadow .12s,filter .12s;
+  }
+  .btn:hover{transform:translateY(-2px);filter:brightness(1.03);box-shadow:0 4px 0 rgba(158,158,215,.42),0 8px 16px rgba(120,130,195,.2),0 1px 0 rgba(255,255,255,.9) inset}
+  .btn:active{transform:translateY(2px);box-shadow:0 1px 0 rgba(158,158,215,.42),0 2px 6px rgba(120,130,195,.18)}
+
+  .importStatus{font-size:11px;font-weight:700;color:var(--ink-soft);min-height:14px}
+  .importStatus.ok{color:var(--blue-deep)}
+  .importStatus.err{color:#e0566f}
+
+  /* live sync indicator */
+  .live{
+    display:inline-flex;align-items:center;gap:5px;
+    font-size:9px;font-weight:800;letter-spacing:.1em;text-transform:uppercase;
+    color:var(--ink-soft);padding-right:3px;
+  }
+  .dot{width:7px;height:7px;border-radius:50%;background:#b9bdd8;
+    box-shadow:0 0 0 0 rgba(91,141,232,.5)}
+  .live.on .dot{background:#54c98b;animation:ping 1.9s infinite}
+  @keyframes ping{
+    0%{box-shadow:0 0 0 0 rgba(84,201,139,.55)}
+    70%{box-shadow:0 0 0 8px rgba(84,201,139,0)}
+    100%{box-shadow:0 0 0 0 rgba(84,201,139,0)}
+  }
+
+  /* ---------------- rows ---------------- */
   .cols{
-    display:grid;grid-template-columns:52px 1fr 132px 92px;gap:14px;
-    padding:0 18px 9px;font-size:10.5px;letter-spacing:.24em;color:var(--ink-dim);
-    text-transform:uppercase;
+    display:grid;grid-template-columns:56px 1fr 130px 78px;gap:14px;
+    padding:0 20px 8px;font-size:11px;font-weight:800;letter-spacing:.18em;
+    color:var(--ink-soft);text-transform:uppercase;
   }
   .cols span:nth-child(3){text-align:right}
   .cols span:nth-child(4){text-align:center}
 
-  /* ---------- rows ---------- */
   .row{
-    display:grid;grid-template-columns:52px 1fr 132px 92px;gap:14px;align-items:center;
-    padding:15px 18px;margin-bottom:11px;border-radius:14px;
-    border:1px solid var(--panel-brd);
-    background:linear-gradient(180deg,var(--panel-bg-hi),var(--panel-bg));
-    backdrop-filter:blur(9px) saturate(115%);
-    -webkit-backdrop-filter:blur(9px) saturate(115%);
-    box-shadow:0 0 0 1px rgba(255,255,255,.05) inset,0 3px 20px rgba(4,12,40,.42);
-    animation:slideIn .32s cubic-bezier(.22,1,.36,1) backwards;
+    display:grid;grid-template-columns:56px 1fr 130px 78px;gap:14px;align-items:center;
+    padding:14px 20px;margin-bottom:12px;
+    border-radius:18px;
+    background:linear-gradient(138deg,
+      rgba(255,255,255,.86) 0%,
+      rgba(236,240,255,.68) 46%,
+      rgba(213,221,252,.60) 100%);
+    border:2px solid rgba(255,255,255,.92);
+    box-shadow:0 3px 0 rgba(163,157,214,.34),0 8px 18px rgba(90,105,175,.14);
     position:relative;
+    animation:pop .34s cubic-bezier(.2,1.3,.4,1) backwards;
   }
-  @keyframes slideIn{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
-  .row:hover{border-color:rgba(150,190,255,.72);background:linear-gradient(180deg,rgba(130,170,240,.16),rgba(96,128,210,.085))}
+  @keyframes pop{from{opacity:0;transform:translateY(12px) scale(.98)}to{opacity:1;transform:none}}
+  .row:hover{background:rgba(255,255,255,.9)}
   .row:hover .del{opacity:1}
+  /* a row that just arrived from the game gets a brief highlight */
+  .row.fresh{animation:pop .34s cubic-bezier(.2,1.3,.4,1) backwards,glow 2.4s ease-out}
+  @keyframes glow{
+    0%{box-shadow:0 3px 0 rgba(163,157,214,.34),0 0 0 4px rgba(91,141,232,.42)}
+    100%{box-shadow:0 3px 0 rgba(163,157,214,.34),0 8px 18px rgba(90,105,175,.14)}
+  }
 
   .rank{
-    font-family:'Orbitron',monospace;font-weight:700;font-size:17px;
-    color:var(--ink-dim);text-align:center;
+    width:36px;height:36px;border-radius:50%;
+    display:flex;align-items:center;justify-content:center;
+    font-weight:800;font-size:15px;color:#fff;
+    background:linear-gradient(180deg,#bcc3ea,#99a5da);
+    box-shadow:0 2px 0 rgba(115,125,180,.45);
   }
-  .row.top1 .rank{color:#ffd86b;text-shadow:0 0 12px rgba(255,200,80,.6)}
-  .row.top2 .rank{color:#d8d8ef;text-shadow:0 0 10px rgba(200,200,240,.45)}
-  .row.top3 .rank{color:#e0a173;text-shadow:0 0 10px rgba(224,150,100,.45)}
-  .row.top1{border-color:rgba(255,205,110,.42)}
+  /* first place is marked with a soft bloom, not a gold badge */
+  .row.p1 .rank{background:linear-gradient(180deg,#c4b0ef,#8ea2e9);box-shadow:0 2px 0 rgba(108,110,190,.5)}
+  .row.p1{
+    border-color:#fff;
+    background:linear-gradient(138deg,
+      rgba(255,255,255,.92) 0%,
+      rgba(233,229,255,.74) 46%,
+      rgba(214,213,250,.64) 100%);
+    box-shadow:0 3px 0 rgba(163,157,214,.34),
+               0 8px 18px rgba(90,105,175,.14);
+  }
 
-  .name{
-    font-family:'Orbitron',monospace;font-weight:500;font-size:16px;
-    letter-spacing:.05em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+  .name{display:flex;flex-direction:column;gap:1px;overflow:hidden}
+  .name-main{
+    font-weight:700;font-size:17px;overflow:hidden;text-overflow:ellipsis;
+    white-space:nowrap;cursor:text;border-radius:6px;padding:1px 4px;margin-left:-4px;
+    transition:background .15s;
   }
+  .name-main:hover{background:rgba(120,130,200,.12)}
+  .name-main:focus{outline:none;background:rgba(255,255,255,.95);
+    box-shadow:0 0 0 2px rgba(91,141,232,.35)}
+  .name-song{font-weight:600;font-size:11px;color:var(--ink-soft);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .score{
-    font-size:19px;text-align:right;letter-spacing:.06em;
-    color:#fff;text-shadow:0 0 10px rgba(110,190,255,.5);
+    text-align:right;font-weight:800;font-size:19px;color:var(--blue-deep);
+    font-variant-numeric:tabular-nums;letter-spacing:.01em;
   }
 
   .grade{
-    justify-self:center;min-width:66px;text-align:center;
-    font-family:'Orbitron',monospace;font-weight:900;font-size:15px;letter-spacing:.06em;
-    padding:6px 10px;border-radius:9px;
-    border:1px solid currentColor;
-    background:rgba(255,255,255,.05);
+    position:relative;overflow:hidden;
+    justify-self:center;min-width:64px;text-align:center;
+    font-family:'M PLUS Rounded 1c',sans-serif;
+    font-weight:800;font-size:14px;letter-spacing:.05em;color:#fff;
+    padding:7px 13px;border-radius:999px;
+    text-shadow:0 1px 2px rgba(60,30,80,.28);
+    box-shadow:0 2px 6px rgba(70,80,150,.22),
+               0 0 0 1px rgba(255,255,255,.42) inset;
   }
+  /* glossy top half, so the pill reads as a lozenge rather than a flat chip */
+  .grade::after{
+    content:'';position:absolute;left:0;right:0;top:0;height:52%;
+    background:linear-gradient(180deg,rgba(255,255,255,.40),rgba(255,255,255,0));
+    pointer-events:none;
+  }
+  .grade span{position:relative;z-index:1}
 
   .del{
-    position:absolute;right:-9px;top:-9px;width:22px;height:22px;border-radius:50%;
-    border:1px solid rgba(255,120,150,.55);background:#1b0f24;color:#ff8fa8;
-    font-size:13px;line-height:1;cursor:pointer;opacity:0;transition:.15s;
+    position:absolute;right:-8px;top:-8px;width:24px;height:24px;border-radius:50%;
+    border:2px solid #fff;background:#f3849c;color:#fff;font-weight:800;
+    font-size:14px;line-height:1;cursor:pointer;opacity:0;transition:.15s;
+    box-shadow:0 2px 5px rgba(120,60,90,.3);
   }
-  .del:hover{background:#37121f}
+  .del:hover{background:#e56480}
 
-  /* ---------- empty / loading ---------- */
   .msg{
-    text-align:center;color:var(--ink-dim);padding:52px 20px;font-size:13px;
-    letter-spacing:.16em;border:1px dashed var(--panel-brd);border-radius:14px;
-    background:rgba(96,84,150,.07);
+    text-align:center;color:rgba(74,80,116,.62);padding:54px 20px;font-weight:700;
+    border:1px solid rgba(120,126,170,.16);border-radius:18px;
+    background:rgba(126,132,170,.13);
   }
+  .msg .ok{color:var(--blue-deep)}
+  .msg .err{color:#e0566f}
 
-  /* ---------- modal ---------- */
-  .veil{
-    position:fixed;inset:0;z-index:80;display:none;
-    align-items:center;justify-content:center;padding:20px;
-    background:rgba(5,3,16,.78);backdrop-filter:blur(5px);
-  }
-  .veil.on{display:flex}
-  .card{
-    width:100%;max-width:400px;border-radius:16px;padding:26px;
-    border:1px solid var(--panel-brd);
-    background:linear-gradient(180deg,#0e1740,#060a1e);
-    box-shadow:0 0 48px rgba(40,110,210,.42);
-    animation:pop .24s cubic-bezier(.22,1,.36,1);
-  }
-  @keyframes pop{from{opacity:0;transform:translateY(14px) scale(.97)}to{opacity:1;transform:none}}
-  .card h2{
-    font-family:'Orbitron',monospace;font-size:16px;font-weight:700;letter-spacing:.16em;
-    margin-bottom:20px;text-align:center;color:var(--violet-soft);
-  }
-  label{display:block;font-size:10.5px;letter-spacing:.22em;color:var(--ink-dim);
-        margin:0 0 6px;text-transform:uppercase}
-  input,select{
-    width:100%;padding:11px 13px;margin-bottom:15px;border-radius:10px;
-    border:1px solid var(--panel-brd);background:rgba(10,6,26,.85);color:var(--ink);
-    font-family:'Share Tech Mono',monospace;font-size:15px;outline:none;
-  }
-  input:focus,select:focus{border-color:var(--violet-soft);box-shadow:0 0 14px rgba(130,100,255,.32)}
-  select option{background:#140e2e}
-  .hint{font-size:11px;color:var(--ink-dim);margin:-9px 0 15px;letter-spacing:.04em}
-  .btns{display:flex;gap:10px;margin-top:4px}
-  .btns button{
-    flex:1;padding:12px;border-radius:10px;cursor:pointer;
-    font-family:'Orbitron',monospace;font-weight:700;font-size:12px;letter-spacing:.12em;
-    border:1px solid var(--panel-brd);background:rgba(96,84,150,.16);color:var(--ink);
-    transition:.16s;
-  }
-  .btns .go{background:linear-gradient(180deg,rgba(150,120,255,.5),rgba(100,80,190,.3));
-            border-color:var(--violet-soft)}
-  .btns button:hover{filter:brightness(1.25)}
-  .err{color:#ff8fa8;font-size:11.5px;min-height:15px;letter-spacing:.05em;margin-bottom:8px}
-
-  @media(max-width:620px){
-    header{flex-direction:column;align-items:center;min-height:auto}
-    #addBtn{position:static;transform:none;margin-top:14px}
-    #addBtn:hover{transform:translateY(-1px)}
-    .cols,.row{grid-template-columns:36px 1fr 96px 62px;gap:9px;padding-left:12px;padding-right:12px}
-    .score{font-size:15px}.name{font-size:14px}.grade{font-size:12px;min-width:52px;padding:5px 6px}
+  @media(max-width:600px){
+    header{margin-bottom:22px}
+    .wordmark{height:56px}
+    .cols,.row{grid-template-columns:40px 1fr 96px 58px;gap:10px;padding-left:13px;padding-right:13px}
+    .rank{width:30px;height:30px;font-size:14px}
+    .name{font-size:15px}.score{font-size:16px}.grade{font-size:12px;min-width:50px;padding:6px 9px}
+    #playerName{width:104px}
   }
 </style>
 </head>
 <body>
-<div class="horizon"></div>
-<div class="wrap">
-  <header>
-    <div>
-      <h1>LEADERBOARD</h1>
-    </div>
-    <button id="addBtn">+ NEW PLAYER</button>
-  </header>
-  <div class="sub">Bing Bing Rhythm War</div>
 
-  <div class="cols"><span>Rank</span><span>Player</span><span>Score</span><span>Rating</span></div>
-  <div id="list"><div class="msg">LOADING…</div></div>
+<div class="chibiSlot right s1" aria-hidden="true"><img src="assets/bestresult.png" alt=""></div>
+<div class="chibiSlot left  s2" aria-hidden="true"><img src="assets/badresult.png"  alt=""></div>
+<div class="chibiSlot right s3" aria-hidden="true"><img src="assets/goodresult.png" alt=""></div>
+
+<div class="spark" style="top:12%;left:6%">
+  <svg width="30" height="30" viewBox="0 0 24 24" fill="#ffffff"><path d="M12 0l2.6 8.4L23 11l-8.4 2.6L12 22l-2.6-8.4L1 11l8.4-2.6z"/></svg>
+</div>
+<div class="spark" style="top:70%;right:9%">
+  <svg width="22" height="22" viewBox="0 0 24 24" fill="#ffffff"><path d="M12 0l2.6 8.4L23 11l-8.4 2.6L12 22l-2.6-8.4L1 11l8.4-2.6z"/></svg>
+</div>
+<div class="spark" style="top:34%;right:4%">
+  <svg width="16" height="16" viewBox="0 0 24 24" fill="#ffffff"><path d="M12 0l2.6 8.4L23 11l-8.4 2.6L12 22l-2.6-8.4L1 11l8.4-2.6z"/></svg>
 </div>
 
-<div class="veil" id="veil">
-  <div class="card">
-    <h2>NEW ENTRY</h2>
-    <div class="err" id="err"></div>
-    <label for="nick">Nickname</label>
-    <input id="nick" maxlength="18" placeholder="PLAYER1" autocomplete="off">
-    <label for="scoreIn">Score</label>
-    <input id="scoreIn" inputmode="numeric" placeholder="0" autocomplete="off">
-    <div class="hint">Out of 1,000,000 — rating fills in automatically.</div>
-    <label for="gradeIn">Rating</label>
-    <select id="gradeIn"></select>
-    <div class="btns">
-      <button id="cancelBtn">CANCEL</button>
-      <button id="saveBtn" class="go">ADD</button>
+<div class="wrap">
+  <header>
+    <img class="wordmark" src="assets/leaderboard_wordmark.png" alt="Leaderboard">
+
+    <div class="controlBar">
+      <div class="nameCard">
+        <label for="playerName">Player</label>
+        <input id="playerName" type="text" maxlength="18" placeholder="your name"
+               autocomplete="off" spellcheck="false">
+        <span class="live" id="live"><span class="dot"></span><span id="liveText">offline</span></span>
+      </div>
+      <button class="btn" id="watchBtn">Watch scores.json</button>
+      <button class="btn" id="importBtn">Import Once</button>
+      <input id="importInput" type="file" accept="application/json,.json" hidden>
     </div>
-  </div>
+    <span class="importStatus" id="importStatus"></span>
+  </header>
+
+  <div class="cols"><span>Rank</span><span>Player</span><span>Score</span><span>Rating</span></div>
+  <div id="list"><div class="msg">Loading…</div></div>
 </div>
 
 <script>
-const MAX = 1000000;
-
-// Cutoffs and colours mirror the game's own grading, so the board agrees with
-// what players see on their results screen.
+// Same cutoffs and labels node_2d.gd's _grade() uses, so the board agrees
+// with the results screen. Colours are the note palette pushed darker,
+// since these sit on white.
 const GRADES = [
-  {k:'SS+', min:0.99, a:'#ff6ac6', b:'#a06aff'},
-  {k:'SS',  min:0.98, a:'#c77dff', b:'#7aa2ff'},
-  {k:'S',   min:0.95, a:'#7aa2ff', b:'#66e8e8'},
-  {k:'A',   min:0.92, a:'#5fdcef', b:'#7ff0c0'},
-  {k:'B',   min:0.89, a:'#8fa8f0', b:'#b79cff'},
-  {k:'C',   min:0.86, a:'#b799dc', b:'#dc95d2'},
-  {k:'D',   min:0.70, a:'#e089bd', b:'#c877b8'},
-  {k:'F',   min:0.00, a:'#f05a72', b:'#cc4d85'},
+  {k:'SS+',  c:'#e8479b', d:'#c02f7e'},
+  {k:'SS',   c:'#9558e2', d:'#7440be'},
+  {k:'S',    c:'#4f86e8', d:'#3765c4'},
+  {k:'A',    c:'#27aec2', d:'#178b9d'},
+  {k:'B',    c:'#6b8ed6', d:'#4f6fb4'},
+  {k:'C',    c:'#9b82c8', d:'#7c64a8'},
+  {k:'D',    c:'#cb7ba6', d:'#a95d85'},
+  {k:'FAIL', c:'#e0596c', d:'#bb3f52'},
 ];
-const gradeFor = s => GRADES.find(g => s / MAX >= g.min) || GRADES[GRADES.length - 1];
 const gradeMeta = k => GRADES.find(g => g.k === k) || GRADES[GRADES.length - 1];
 
-const KEY = 'rhythm-leaderboard-v1';
+const KEY = 'bbda-leaderboard-v1';
+const NAME_KEY = 'bbda-player-name-v1';
 let rows = [];
+let playerName = '';
+let freshIds = new Set();
 
 const $ = id => document.getElementById(id);
-const listEl = $('list'), veil = $('veil'), errEl = $('err');
+const listEl = $('list'), importStatus = $('importStatus');
 
-GRADES.forEach(g => {
-  const o = document.createElement('option');
-  o.value = g.k; o.textContent = g.k;
-  $('gradeIn').appendChild(o);
-});
+/* ------------------------------------------------------------------
+   Storage shim.  window.storage exists inside Claude artifacts; when this
+   page is opened from disk or served locally it is absent, so fall back to
+   localStorage.  Both are async-shaped here so callers don't care which.
+------------------------------------------------------------------ */
+const store = {
+  async get(k){
+    if (window.storage) {
+      try { const r = await window.storage.get(k, true); return r ? r.value : null; }
+      catch (e) { return null; }
+    }
+    return localStorage.getItem(k);
+  },
+  async set(k, v){
+    if (window.storage) {
+      try { await window.storage.set(k, v, true); return; } catch (e) {}
+    }
+    try { localStorage.setItem(k, v); } catch (e) { console.error(e); }
+  }
+};
+
+// hex -> rgba so the rating pill can sit slightly translucent over the card
+const rgba = (hex, a) => {
+  const n = parseInt(hex.slice(1), 16);
+  return 'rgba(' + (n >> 16 & 255) + ',' + (n >> 8 & 255) + ',' + (n & 255) + ',' + a + ')';
+};
 
 const fmt = n => n.toString().padStart(7, '0').replace(/\B(?=(\d{3})+(?!\d))/g, "'");
 
 function render(){
   if (!rows.length){
-    listEl.innerHTML = '<div class="msg">NO SCORES YET — ADD THE FIRST ONE</div>';
+    // The empty box carries the sync status, so there is no second line of
+    // chrome under the buttons saying the same thing.
+    listEl.innerHTML = '<div class="msg"><span id="emptyStatus"></span></div>';
+    updateStatusUI();
     return;
   }
-  const sorted = [...rows].sort((x, y) => y.score - x.score);
+  const sorted = [...rows].sort((a, b) => b.score - a.score);
   listEl.innerHTML = '';
   sorted.forEach((r, i) => {
     const g = gradeMeta(r.grade);
     const el = document.createElement('div');
-    el.className = 'row' + (i < 3 ? ' top' + (i + 1) : '');
-    el.style.animationDelay = (i * 38) + 'ms';
+    el.className = 'row' + (i < 3 ? ' p' + (i + 1) : '') + (freshIds.has(r.id) ? ' fresh' : '');
+    el.style.animationDelay = (i * 40) + 'ms';
     el.innerHTML =
       '<div class="rank">' + (i + 1) + '</div>' +
-      '<div class="name"></div>' +
+      '<div class="name"><span class="name-main" contenteditable="true" spellcheck="false"></span>' +
+        '<span class="name-song"></span></div>' +
       '<div class="score">' + fmt(r.score) + '</div>' +
-      '<div class="grade" style="color:' + g.a +
-        ';background:linear-gradient(135deg,' + g.a + '22,' + g.b + '22)">' + r.grade + '</div>' +
+      '<div class="grade" style="background:linear-gradient(158deg,' + rgba(g.c,.92) +
+        ',' + rgba(g.d,.86) + ')"><span>' + r.grade + '</span></div>' +
       '<button class="del" title="remove">×</button>';
-    el.querySelector('.name').textContent = r.name;   // textContent: no HTML injection
+
+    // textContent, so odd names/song titles can't inject HTML
+    const nameEl = el.querySelector('.name-main');
+    nameEl.textContent = r.name;
+    nameEl.title = 'click to rename';
+    // Commit a rename on blur or Enter; Escape puts the old value back.
+    nameEl.addEventListener('blur', async () => {
+      const v = nameEl.textContent.trim().slice(0, 18);
+      nameEl.textContent = v || r.name;
+      if (v && v !== r.name){ r.name = v; await save(); }
+    });
+    nameEl.addEventListener('keydown', ev => {
+      if (ev.key === 'Enter'){ ev.preventDefault(); nameEl.blur(); }
+      if (ev.key === 'Escape'){ nameEl.textContent = r.name; nameEl.blur(); }
+    });
+
+    el.querySelector('.name-song').textContent = r.song || '';
     el.querySelector('.del').onclick = () => remove(r.id);
     listEl.appendChild(el);
   });
+  // the highlight is a one-shot; clear it after the animation has played
+  if (freshIds.size) setTimeout(() => { freshIds.clear(); }, 2600);
 }
 
 async function load(){
-  try {
-    const res = await window.storage.get(KEY, true);
-    rows = res && res.value ? JSON.parse(res.value) : [];
-  } catch (e) {
-    rows = [];                       // missing key throws; that just means empty
-  }
+  const raw = await store.get(KEY);
+  try { rows = raw ? JSON.parse(raw) : []; } catch (e) { rows = []; }
+  playerName = (await store.get(NAME_KEY)) || '';
+  $('playerName').value = playerName;
   render();
 }
 
 async function save(){
-  try {
-    await window.storage.set(KEY, JSON.stringify(rows), true);
-  } catch (e) {
-    console.error('save failed', e);
-    errEl.textContent = 'COULD NOT SAVE — TRY AGAIN';
-  }
+  await store.set(KEY, JSON.stringify(rows));
 }
 
 async function remove(id){
@@ -329,46 +408,185 @@ async function remove(id){
   await save();
 }
 
-function openModal(){
-  errEl.textContent = '';
-  $('nick').value = ''; $('scoreIn').value = '';
-  $('gradeIn').value = gradeFor(0).k;
-  veil.classList.add('on');
-  $('nick').focus();
+/* ------------------------------------------------------------------
+   Merge.  Records written by the game carry no player name, so each new one
+   is stamped with whatever name is in the box at the time it arrives; older
+   rows keep the name they were given. Matching on id means re-reading the
+   same scores.json never duplicates rows.
+------------------------------------------------------------------ */
+function mergeImported(list){
+  const existing = new Set(rows.map(r => r.id));
+  let added = 0;
+  for (const rec of list){
+    if (!rec || typeof rec.score !== 'number') continue;
+    const id = rec.id != null
+      ? String(rec.id)
+      : (rec.name || 'anon') + '-' + rec.score + '-' + (rec.at || '');
+    if (existing.has(id)) continue;
+    existing.add(id);
+    rows.push({
+      id,
+      name: String(rec.name || playerName || 'Player'),
+      score: Math.max(0, Math.round(rec.score)),
+      grade: String(rec.grade || 'FAIL'),
+      song: rec.song ? String(rec.song) : '',
+    });
+    freshIds.add(id);
+    added++;
+  }
+  return added;
 }
-const closeModal = () => veil.classList.remove('on');
 
-// keep the rating in step with the score as it is typed
-$('scoreIn').addEventListener('input', e => {
-  const digits = e.target.value.replace(/[^\d]/g, '');
-  e.target.value = digits;
-  if (digits) $('gradeIn').value = gradeFor(Math.min(parseInt(digits, 10), MAX)).k;
-});
-
-async function submit(){
-  const name = $('nick').value.trim();
-  const raw  = $('scoreIn').value.replace(/[^\d]/g, '');
-  if (!name){ errEl.textContent = 'ENTER A NICKNAME'; return; }
-  if (!raw){ errEl.textContent = 'ENTER A SCORE'; return; }
-  let score = parseInt(raw, 10);
-  if (score > MAX){ errEl.textContent = 'MAX SCORE IS 1,000,000'; return; }
-  rows.push({ id: Date.now() + '-' + Math.random().toString(36).slice(2, 7),
-              name, score, grade: $('gradeIn').value });
-  closeModal();
+async function handleIncoming(list, sourceLabel){
+  const added = mergeImported(list);
+  if (!added) return 0;
   render();
   await save();
+  setStatus('+' + added + ' new result' + (added === 1 ? '' : 's') + ' from ' + sourceLabel, 'ok');
+  return added;
 }
 
-$('addBtn').onclick = openModal;
-$('cancelBtn').onclick = closeModal;
-$('saveBtn').onclick = submit;
-veil.onclick = e => { if (e.target === veil) closeModal(); };
-document.addEventListener('keydown', e => {
-  if (e.key === 'Escape') closeModal();
-  if (e.key === 'Enter' && veil.classList.contains('on')) submit();
+let statusText = 'waiting for scores.json…';
+let statusKind = '';
+
+function setStatus(text, kind){
+  statusText = text;
+  statusKind = kind || '';
+  updateStatusUI();
+}
+
+// One message, two possible homes: the empty-state box while the board has
+// no rows, and the thin line under the buttons once it does.
+function updateStatusUI(){
+  const empty = !rows.length;
+  importStatus.textContent = empty ? '' : statusText;
+  importStatus.className = 'importStatus' + (statusKind ? ' ' + statusKind : '');
+  const box = document.getElementById('emptyStatus');
+  if (box){
+    box.textContent = statusText;
+    box.className = statusKind || '';
+  }
+}
+
+function setLive(on, label){
+  $('live').className = 'live' + (on ? ' on' : '');
+  $('liveText').textContent = label;
+}
+
+$('playerName').addEventListener('input', async e => {
+  playerName = e.target.value.trim().slice(0, 18);
+  await store.set(NAME_KEY, playerName);
 });
 
-load();
+let lastOkAt = 0;
+
+function markLive(label){
+  lastOkAt = Date.now();
+  setLive(true, label);
+}
+
+setInterval(() => {
+  if (lastOkAt && Date.now() - lastOkAt > 9000) setLive(false, 'offline');
+}, 2000);
+
+async function pollFetch(){
+  try {
+    const res = await fetch('scores.json?t=' + Date.now(), {cache: 'no-store'});
+    if (!res.ok) throw new Error('status ' + res.status);
+    const data = await res.json();
+    markLive('live');
+    await handleIncoming(Array.isArray(data) ? data : [data], 'scores.json');
+  } catch (e) {
+  }
+}
+
+let scriptBusy = false;
+
+function pollScript(){
+  if (scriptBusy) return;
+  scriptBusy = true;
+  const s = document.createElement('script');
+  s.src = 'scores.js?t=' + Date.now();
+  s.onload = async () => {
+    s.remove();
+    scriptBusy = false;
+    if (Array.isArray(window.__scores)){
+      markLive('live');
+      await handleIncoming(window.__scores, 'scores.js');
+    }
+  };
+  s.onerror = () => { s.remove(); scriptBusy = false; };
+  document.head.appendChild(s);
+}
+
+let watchHandle = null;
+let lastMod = 0;
+
+$('watchBtn').onclick = async () => {
+  if (!window.showOpenFilePicker){
+    setStatus(location.protocol === 'file:'
+      ? 'File watching is unavailable on file:// pages — the game also writes scores.js, which this page picks up automatically, so you should not need this button'
+      : 'This browser has no file watching — use Import Once instead', 'err');
+    return;
+  }
+  try {
+    const [handle] = await window.showOpenFilePicker({
+      types: [{description: 'Scores', accept: {'application/json': ['.json']}}],
+      multiple: false,
+    });
+    watchHandle = handle;
+    lastMod = 0;
+    markLive('watching');
+    setStatus('Watching ' + handle.name + ' — new results appear automatically', 'ok');
+    pollWatch();
+  } catch (e) {
+    // the picker throws when dismissed; nothing to report
+  }
+};
+
+async function pollWatch(){
+  if (!watchHandle) return;
+  try {
+    const file = await watchHandle.getFile();
+    markLive('watching');
+    if (file.lastModified !== lastMod){
+      lastMod = file.lastModified;
+      const data = JSON.parse(await file.text());
+      await handleIncoming(Array.isArray(data) ? data : [data], watchHandle.name);
+    }
+  } catch (e) {
+    setStatus('Lost access to that file — press Watch scores.json again', 'err');
+    watchHandle = null;
+  }
+}
+
+/* ---------------- manual import, unchanged fallback ---------------- */
+$('importBtn').onclick = () => $('importInput').click();
+
+$('importInput').addEventListener('change', async e => {
+  const file = e.target.files[0];
+  e.target.value = '';
+  if (!file) return;
+  let list;
+  try {
+    const data = JSON.parse(await file.text());
+    list = Array.isArray(data) ? data : [data];
+  } catch (err){
+    setStatus('Could not read that file — pick scores.json from the game folder', 'err');
+    return;
+  }
+  const added = await handleIncoming(list, file.name);
+  if (!added) setStatus('No new results in that file', 'ok');
+});
+
+/* ---------------- start ---------------- */
+load().then(() => {
+  pollFetch();
+  pollScript();
+  setInterval(pollFetch, 3000);
+  setInterval(pollScript, 3000);
+  setInterval(pollWatch, 2000);
+});
 </script>
 </body>
 </html>
