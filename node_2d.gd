@@ -89,10 +89,11 @@ var pause_rect: Rect2
 var last_seek_at: float = -999.0
 var ui_time: float = 0.0
 var finish_ui: float = -1.0
-var results_saved := false
 
 var font_bold: FontVariation
 var font_heavy: FontVariation
+var font_thin: FontVariation
+var _vgrad_items: Array = []
 
 
 func _ready() -> void:
@@ -112,6 +113,11 @@ func _ready() -> void:
 	font_heavy.base_font = ThemeDB.fallback_font
 	font_heavy.variation_embolden = 0.72
 	font_heavy.spacing_glyph = 1
+	# Light weight used across the results screen.
+	font_thin = FontVariation.new()
+	font_thin.base_font = ThemeDB.fallback_font
+	font_thin.variation_embolden = 0.0
+	font_thin.spacing_glyph = 1
 
 	_setup_video()
 	_load_beatmap()
@@ -228,83 +234,50 @@ func _compute_max_score() -> void:
 	max_score = int(SCORE_POOL)
 
 
+## Grade colours: D is a vivid blue and each step up shifts toward purple,
+## ending on a hot pink-purple for SS+.  The second entry is a lighter tint of
+## the same hue, used for the soft glow behind the letter.
 const GRADE_RAMPS := {
-	"SS+":  [Color(1.00, 0.42, 0.78), Color(0.62, 0.42, 1.00)],
-	"SS":   [Color(0.78, 0.46, 1.00), Color(0.45, 0.60, 1.00)],
-	"S":    [Color(0.48, 0.62, 1.00), Color(0.40, 0.92, 0.92)],
-	"A":    [Color(0.42, 0.86, 0.95), Color(0.52, 0.94, 0.80)],
-	"B":    [Color(0.60, 0.68, 0.95), Color(0.72, 0.62, 1.00)],
-	"C":    [Color(0.72, 0.60, 0.86), Color(0.86, 0.58, 0.82)],
-	"D":    [Color(0.88, 0.52, 0.74), Color(0.78, 0.46, 0.72)],
-	"FAIL": [Color(0.94, 0.34, 0.46), Color(0.80, 0.30, 0.52)],
+	"SS+":  [Color(0.78, 0.40, 0.74), Color(0.90, 0.62, 0.86)],
+	"SS":   [Color(0.68, 0.42, 0.84), Color(0.83, 0.64, 0.94)],
+	"S":    [Color(0.62, 0.44, 0.87), Color(0.78, 0.66, 0.96)],
+	"A":    [Color(0.55, 0.46, 0.89), Color(0.73, 0.68, 0.96)],
+	"B":    [Color(0.48, 0.50, 0.89), Color(0.67, 0.71, 0.96)],
+	"C":    [Color(0.42, 0.54, 0.88), Color(0.62, 0.74, 0.96)],
+	"D":    [Color(0.34, 0.58, 0.88), Color(0.57, 0.77, 0.96)],
+	"FAIL": [Color(0.85, 0.36, 0.45), Color(0.94, 0.60, 0.66)],
 }
 
 func _grade() -> Array:
 	var pct: float = clampf(score_f / SCORE_POOL, 0.0, 1.0)
 	var key: String = "FAIL"
-	if pct >= 0.99:    key = "SS+"
-	elif pct >= 0.98:  key = "SS"
-	elif pct >= 0.95:  key = "S"
-	elif pct >= 0.92:  key = "A"
-	elif pct >= 0.89:  key = "B"
-	elif pct >= 0.86:  key = "C"
-	elif pct >= 0.70:  key = "D"
+	if pct >= 0.98:    key = "SS+"
+	elif pct >= 0.95:  key = "SS"
+	elif pct >= 0.90:  key = "S"
+	elif pct >= 0.80:  key = "A"
+	elif pct >= 0.70:  key = "B"
+	elif pct >= 0.60:  key = "C"
+	elif pct >= 0.50:  key = "D"
 	var ramp: Array = GRADE_RAMPS[key]
 	return [key, ramp[0], pct, ramp[1]]
 
 
-const LEADERBOARD_PATH := "res://leaderboard_data.json"
-
-func _save_result() -> void:
-	## Appends this play to leaderboard_data.json, which leaderboard.html
-	## imports by hand (there is no server, so the page can't fetch it itself).
-	var entries: Array = []
-	if FileAccess.file_exists(LEADERBOARD_PATH):
-		var rf := FileAccess.open(LEADERBOARD_PATH, FileAccess.READ)
-		var parsed = JSON.parse_string(rf.get_as_text())
-		rf.close()
-		if typeof(parsed) == TYPE_ARRAY:
-			entries = parsed
-
-	var uname: String = OS.get_environment("USERNAME")
-	if uname == "":
-		uname = OS.get_environment("USER")
-	if uname == "":
-		uname = "Player"
-
-	entries.append({
-		"id": "%d-%d" % [Time.get_unix_time_from_system(), randi() % 100000],
-		"name": uname,
-		"score": score,
-		"grade": String(_grade()[0]),
-		"song": song_title,
-		"combo": best_combo,
-		"at": Time.get_datetime_string_from_system(),
-	})
-
-	var wf := FileAccess.open(LEADERBOARD_PATH, FileAccess.WRITE)
-	if wf == null:
-		push_warning("Could not write %s" % LEADERBOARD_PATH)
-		return
-	wf.store_string(JSON.stringify(entries, "\t"))
-	wf.close()
-
-
-const RESULT_ART_FAIL: Texture2D = preload("res://assets/game_loss.png")
-const RESULT_ART_PASS: Texture2D = preload("res://assets/start_bg.png")
-const RESULT_ART_SUCCESS: Texture2D = preload("res://assets/game_win.png")
+const RESULT_JACKET: Texture2D = preload("res://assets/jacket_badapple.png")
+const CHIBI_BEST: Texture2D = preload("res://assets/bestresult.png")
+const CHIBI_GOOD: Texture2D = preload("res://assets/goodresult.png")
+const CHIBI_BAD:  Texture2D = preload("res://assets/badresult.png")
 
 const GRADE_CATEGORY := {
-	"FAIL": "FAIL",
-	"D": "PASS", "C": "PASS", "B": "PASS", "A": "PASS",
-	"S": "SUCCESS", "SS": "SUCCESS", "SS+": "SUCCESS",
+	"SS+": "BEST", "SS": "BEST", "S": "BEST",
+	"A": "GOOD", "B": "GOOD",
+	"C": "BAD", "D": "BAD", "FAIL": "BAD",
 }
 
 func _result_art(grade_key: String) -> Texture2D:
-	match GRADE_CATEGORY.get(grade_key, "FAIL"):
-		"SUCCESS": return RESULT_ART_SUCCESS
-		"PASS": return RESULT_ART_PASS
-		_: return RESULT_ART_FAIL
+	match GRADE_CATEGORY.get(grade_key, "BAD"):
+		"BEST": return CHIBI_BEST
+		"GOOD": return CHIBI_GOOD
+		_: return CHIBI_BAD
 
 
 func _fmt_score(v: int) -> String:
@@ -324,9 +297,6 @@ func _process(delta: float) -> void:
 	ui_time += delta
 	if finished and finish_ui < 0.0:
 		finish_ui = ui_time
-	if finished and not results_saved:
-		results_saved = true
-		_save_result()
 	if paused or finished:
 		_tick_visuals(delta)
 		queue_redraw()
@@ -674,7 +644,6 @@ func _restart() -> void:
 	started = false
 	finished = false
 	finish_ui = -1.0
-	results_saved = false
 	paused = false
 	song_time = -start_delay
 	score = 0
@@ -759,55 +728,87 @@ func _rims(n: Dictionary) -> Array:
 
 func _band_colour(outer_c: Color, inner_c: Color, t: float) -> Color:
 	var base: Color = inner_c.lerp(outer_c, t)
+	# Wider, gentler bright centre that extends across most of the note,
+	# fading to the rim colours only at the very edges.
 	var whiten: float = 1.0 - absf(t - 0.5) * 2.0
-	whiten = pow(clampf(whiten, 0.0, 1.0), 0.75) * 0.88
+	whiten = pow(clampf(whiten, 0.0, 1.0), 0.45) * 0.62
 	return base.lerp(Color(1, 1, 1), whiten)
 
 
 func _draw_note_body(r: float, a_c: float, half_len: float, thick: float,
 					 outer_c: Color, inner_c: Color, alpha: float,
-					 slide_dir: float = 0.0) -> void:
+					 slide_dir: float = 0.0, skip_depth: bool = false,
+					 glow_boost: float = 0.0, skip_halo: bool = false) -> void:
 	if r < 1.0 or alpha <= 0.01:
 		return
 	var half_deg: float = minf(rad_to_deg(half_len / maxf(r, 8.0)), 26.0)
 	var r_out: float = r + thick * 0.5
-	var r_in: float = r - thick * 0.5
+	var r_in: float = maxf(0.5, r - thick * 0.5)
 
-	_fill_arc(r, a_c, half_deg * 1.05, thick * 2.3,
-		Color(outer_c.r, outer_c.g, outer_c.b, 0.13 * alpha))
-	_fill_arc(r, a_c, half_deg * 1.02, thick * 1.5,
-		Color(inner_c.r, inner_c.g, inner_c.b, 0.16 * alpha))
+	# ── Soft 3D depth shadow ─────────────────────────────────────────────
+	if not skip_depth:
+		var depth_px: float = 7.0 * clampf(r / radius, 0.0, 1.0)
+		if depth_px > 0.5:
+			var depth_offset: Vector2 = _vec(a_c) * depth_px
+			var shadow_base: Color = outer_c.lerp(inner_c, 0.5).darkened(0.30)
+			var orig_centre: Vector2 = centre
+			for di in 5:
+				var t_d: float = float(di + 1) / 5.0
+				centre = orig_centre + depth_offset * t_d
+				var sha: float = 0.14 * (1.0 - t_d) * alpha
+				_fill_arc(r, a_c, half_deg, thick,
+					Color(shadow_base.r, shadow_base.g, shadow_base.b, sha))
+			centre = orig_centre
 
-	var bands: int = 9
+	# ── Halos (soft glow) ────────────────────────────────────────────────
+	if not skip_halo:
+		_fill_arc(r, a_c, half_deg * 1.05, thick * 2.0,
+			Color(outer_c.r, outer_c.g, outer_c.b, 0.10 * alpha))
+		_fill_arc(r, a_c, half_deg * 1.02, thick * 1.3,
+			Color(inner_c.r, inner_c.g, inner_c.b, 0.12 * alpha))
+
+	# ── Colour bands (smooth gradient — 24 bands eliminates banding) ─────
+	var bands: int = 24
 	for i in bands:
 		var tc: float = (float(i) + 0.5) / bands
 		var c: Color = _band_colour(outer_c, inner_c, tc)
 		_fill_arc(r + (tc - 0.5) * thick, a_c, half_deg, thick / bands + 0.9,
 			Color(c.r, c.g, c.b, 0.97 * alpha))
 
-	var ow: float = 2.4
+	# ── Extra interior glow for bonus / gold notes ───────────────────────
+	if glow_boost > 0.01:
+		_fill_arc(r, a_c, half_deg * 1.1, thick * 1.6,
+			Color(outer_c.r, outer_c.g, outer_c.b, 0.24 * glow_boost * alpha))
+		_fill_arc(r, a_c, half_deg * 0.92, thick * 0.85,
+			Color(1, 1, 1, 0.30 * glow_boost * alpha))
+		_fill_arc(r, a_c, half_deg * 0.70, thick * 0.45,
+			Color(1, 1, 1, 0.34 * glow_boost * alpha))
+
+	# ── Outlines (tight / thin) ──────────────────────────────────────────
+	var ow: float = 1.2
 	var mid_c: Color = outer_c.lerp(inner_c, 0.5)
 	draw_polyline(_arc_line(r_out, a_c, half_deg),
-		Color(outer_c.r, outer_c.g, outer_c.b, 0.98 * alpha), ow)
+		Color(outer_c.r, outer_c.g, outer_c.b, 0.85 * alpha), ow)
 	draw_polyline(_arc_line(r_in, a_c, half_deg),
-		Color(inner_c.r, inner_c.g, inner_c.b, 0.98 * alpha), ow)
+		Color(inner_c.r, inner_c.g, inner_c.b, 0.85 * alpha), ow)
 	for side in [-1.0, 1.0]:
 		var ea: float = a_c + side * half_deg
 		var ev := _vec(ea)
 		draw_line(centre + ev * r_in, centre + ev * r_out,
-			Color(mid_c.r, mid_c.g, mid_c.b, 0.98 * alpha), ow)
+			Color(mid_c.r, mid_c.g, mid_c.b, 0.85 * alpha), ow)
 
+	# ── Slide-direction chevrons (span full note height) ──────────────
 	if absf(slide_dir) > 0.01:
 		var tang := (_vec(a_c + 1.0) - _vec(a_c - 1.0)).normalized() * signf(slide_dir)
 		var rad := _vec(a_c)
 		var pos := centre + rad * r
-		var sl: float = thick * 0.46
+		var sl: float = thick * 0.48
 		for k in 2:
 			var off := tang * (float(k) * sl * 0.85 - sl * 0.42)
 			draw_colored_polygon(PackedVector2Array([
 				pos + off + tang * sl * 0.55,
-				pos + off - tang * sl * 0.18 + rad * sl * 0.62,
-				pos + off - tang * sl * 0.18 - rad * sl * 0.62,
+				pos + off - tang * sl * 0.18 + rad * sl * 0.95,
+				pos + off - tang * sl * 0.18 - rad * sl * 0.95,
 			]), Color(1, 1, 1, 0.80 * alpha))
 
 
@@ -860,10 +861,16 @@ func _draw_slide(n: Dictionary) -> void:
 	var a0: float = float(n["angle"])
 	var lit: bool = String(n["state"]) == "holding"
 
+	# ── Ribbon geometry ──────────────────────────────────────────────────
+	# Ribbon uses the SAME width as the head/tail caps so the whole slide
+	# reads as one continuous shape rather than a wide band with two
+	# narrower bars stuck on the ends.
+	var ribbon_scale: float = slide_width_scale
 	var steps: int = 64
 	var ang := PackedFloat32Array()
 	var rad := PackedFloat32Array()
 	var wid := PackedFloat32Array()
+	var uvals := PackedFloat32Array()
 	for i in steps + 1:
 		var u: float = float(i) / steps
 		var lead_u: float = (float(n["t"]) + u * hold) - song_time
@@ -872,55 +879,103 @@ func _draw_slide(n: Dictionary) -> void:
 		var ru: float = _radius_at(lead_u)
 		ang.append(a0 + span * u)
 		rad.append(ru)
-		wid.append(_note_thick(ru, slide_width_scale))
+		wid.append(_note_thick(ru, ribbon_scale))
+		uvals.append(u)
 	if ang.size() < 2:
 		return
 
-	var boost: float = 1.15 if lit else 1.0
+	# Current hit position (u = 0 at head, 1 at tail)
+	var hit_u: float = 0.0
+	if lit:
+		var elapsed: float = clampf(song_time - float(n["t"]), 0.0, hold)
+		hit_u = elapsed / hold
 
-	# The wider the halo, the sooner its inner edge would cross the centre, so
-	# each pass truncates at its own point and any of them can come back empty.
-	var halo := [2.1, 1.6, 1.3]
-	var halo_a := [0.075, 0.095, 0.115]
-	for i in halo.size():
-		var halo_poly := _ribbon_poly(ang, rad, wid, float(halo[i]))
-		if halo_poly.size() >= 3:
-			draw_colored_polygon(halo_poly,
-				Color(mid_c.r, mid_c.g, mid_c.b, float(halo_a[i]) * boost))
+	# ── Single soft halo (multiple layers created visible ghost arcs) ────
+	var halo_poly := _ribbon_poly(ang, rad, wid, 1.35)
+	if halo_poly.size() >= 3:
+		draw_colored_polygon(halo_poly,
+			Color(mid_c.r, mid_c.g, mid_c.b, 0.10))
 
+	# ── Main filled ribbon ───────────────────────────────────────────────
 	var core := _band_colour(outer_c, inner_c, 0.5)
 	var core_poly := _ribbon_poly(ang, rad, wid, 1.0)
 	if core_poly.size() >= 3:
 		draw_colored_polygon(core_poly,
-			Color(core.r, core.g, core.b, 0.58 * boost))
+			Color(core.r, core.g, core.b, 0.80))
 
+	# Brighter inner highlight band
+	var inner_band := _ribbon_poly(ang, rad, wid, 0.45)
+	if inner_band.size() >= 3:
+		var bright: Color = core.lerp(Color(1, 1, 1), 0.30)
+		draw_colored_polygon(inner_band,
+			Color(bright.r, bright.g, bright.b, 0.50))
+
+	# ── Fade the passed portion when holding ─────────────────────────────
+	if lit and hit_u > 0.01:
+		var passed_ang := PackedFloat32Array()
+		var passed_rad := PackedFloat32Array()
+		var passed_wid := PackedFloat32Array()
+		for i in uvals.size():
+			if uvals[i] > hit_u:
+				break
+			passed_ang.append(ang[i])
+			passed_rad.append(rad[i])
+			passed_wid.append(wid[i])
+		if passed_ang.size() >= 2:
+			var fade_poly := _ribbon_poly(passed_ang, passed_rad, passed_wid, 1.05)
+			if fade_poly.size() >= 3:
+				draw_colored_polygon(fade_poly, Color(0.01, 0.01, 0.03, 0.50))
+
+	# ── Glow at the current hit position ─────────────────────────────────
+	if lit:
+		var hit_angle: float = a0 + span * hit_u
+		var hit_lead: float = (float(n["t"]) + hit_u * hold) - song_time
+		var hit_r: float = _radius_at(hit_lead)
+		var hit_w: float = _note_thick(hit_r, ribbon_scale)
+		var glow_half: float = minf(rad_to_deg(hit_w / maxf(hit_r, 8.0)), 18.0)
+		_fill_arc(hit_r, hit_angle, glow_half * 1.6, hit_w * 2.2,
+			Color(mid_c.r, mid_c.g, mid_c.b, 0.18))
+		_fill_arc(hit_r, hit_angle, glow_half, hit_w * 1.4,
+			Color(1, 1, 1, 0.10))
+
+	# ── Edge outlines (thin) ─────────────────────────────────────────────
 	var out_pts := PackedVector2Array()
 	var in_pts := PackedVector2Array()
 	for i in ang.size():
 		var v := _vec(ang[i])
 		out_pts.append(centre + v * (rad[i] + wid[i] * 0.5))
 		in_pts.append(centre + v * (rad[i] - wid[i] * 0.5))
-	draw_polyline(out_pts, Color(outer_c.r, outer_c.g, outer_c.b, 0.72 * boost), 2.2)
-	draw_polyline(in_pts, Color(inner_c.r, inner_c.g, inner_c.b, 0.72 * boost), 2.2)
+	draw_polyline(out_pts, Color(outer_c.r, outer_c.g, outer_c.b, 0.65), 1.4)
+	draw_polyline(in_pts, Color(inner_c.r, inner_c.g, inner_c.b, 0.65), 1.4)
 
+	# ── Fluid head / tail caps ───────────────────────────────────────────
+	# Drawn with skip_depth AND skip_halo so they add no glow or shadow of
+	# their own -- they are just the brighter colour bands sitting exactly on
+	# the ribbon, which is already the same width, so the slide reads as one
+	# continuous shape with brighter ends.
 	var tail_lead: float = (float(n["t"]) + hold) - song_time
 	if tail_lead <= travel:
 		var r_end: float = _radius_at(tail_lead)
 		var len_end: float = lerpf(bar_len_centre, bar_len_edge, r_end / radius) * 0.5
 		_draw_note_body(r_end, a0 + span, len_end * 0.82,
-			_note_thick(r_end, slide_width_scale), outer_c, inner_c, 0.9)
+			_note_thick(r_end, ribbon_scale), outer_c, inner_c, 0.9,
+			0.0, true, 0.0, true)
 
 	var head_lead: float = float(n["t"]) - song_time
 	var r_head: float = _radius_at(head_lead)
 	var hu: float = clampf(-head_lead / hold, 0.0, 1.0) if hold > 0.0 else 0.0
 	var len_head: float = lerpf(bar_len_centre, bar_len_edge, r_head / radius) * 0.5
 	_draw_note_body(r_head, a0 + span * hu, len_head,
-		_note_thick(r_head, slide_width_scale), outer_c, inner_c, 1.0,
-		float(n["sweep"]))
+		_note_thick(r_head, ribbon_scale), outer_c, inner_c, 1.0,
+		float(n["sweep"]), true, 0.0, true)
 
 
 func _draw() -> void:
 	var vp := get_viewport_rect().size
+
+	# Clipped gradient-text items persist between frames, so wipe them first;
+	# _draw_vgrad_text refills whichever it needs this frame.
+	_vgrad_clear_all()
 
 	draw_rect(Rect2(Vector2.ZERO, vp), Color(0.01, 0.01, 0.03, scrim_alpha))
 
@@ -1002,11 +1057,23 @@ func _draw_notes() -> void:
 		var a1: float = float(pr[1]["angle"])
 		if absf(a1 - a0) > 180.0:
 			a1 += 360.0 if a1 < a0 else -360.0
-		var pts := PackedVector2Array()
-		for i in 25:
-			pts.append(centre + _vec(lerpf(a0, a1, float(i) / 24.0)) * radius * p)
-		draw_polyline(pts, Color(1, 1, 1, 0.20 * p), 7.0)
-		draw_polyline(pts, Color(1, 1, 1, 0.90 * p), 2.6)
+
+		# ── FIX: filled band spanning full note vertices instead of thin line
+		var band_r: float = radius * p
+		var band_thick: float = _note_thick(band_r) * 0.85
+		# Extend arc to include the half-width of the notes at each end
+		var hl: float = lerpf(bar_len_centre, bar_len_edge, p) * 0.5
+		var note_half_deg: float = minf(rad_to_deg(hl / maxf(band_r, 8.0)), 26.0)
+		var a_min: float = minf(a0, a1) - note_half_deg
+		var a_max: float = maxf(a0, a1) + note_half_deg
+		var mid_a: float = (a_min + a_max) * 0.5
+		var span_half: float = (a_max - a_min) * 0.5
+
+		_fill_arc(band_r, mid_a, span_half, band_thick,
+			Color(1, 1, 1, 0.14 * p))
+		# Single line down the centre of the band
+		draw_polyline(_arc_line(band_r, mid_a, span_half),
+			Color(1, 1, 1, 0.70 * p), 1.6)
 
 	for n in notes:
 		var hold: float = float(n["hold"])
@@ -1038,8 +1105,9 @@ func _draw_notes() -> void:
 				alpha = clampf(1.0 + lead / (win_near / 1000.0), 0.25, 1.0)
 			alpha *= smoothstep(0.0, 0.10, p)
 			var rr: float = radius * p
+			var glow: float = 0.6 if bool(n["bonus"]) else 0.0
 			_draw_note_body(rr, float(n["angle"]), hl, _note_thick(rr),
-				rim[0], rim[1], alpha)
+				rim[0], rim[1], alpha, 0.0, false, glow)
 
 
 func _draw_popups() -> void:
@@ -1234,14 +1302,136 @@ func _draw_ghost_number(pos: Vector2, txt: String, sz: int, accent: Color,
 
 
 func _draw_result_backdrop(vp: Vector2, a: float) -> void:
-	var art: Texture2D = _result_art(String(_grade()[0]))
-	var tex_size: Vector2 = art.get_size()
-	if tex_size.x <= 0.0 or tex_size.y <= 0.0:
+	## Soft light backdrop, matching the intro screen, with faint cover art.
+	draw_rect(Rect2(Vector2.ZERO, vp), Color(0.957, 0.949, 0.976, a))
+	var bg_rect: Rect2 = _fit_texture_rect(RES_BG_ART, Rect2(Vector2.ZERO, vp), true)
+	draw_texture_rect(RES_BG_ART, bg_rect, false, Color(1, 1, 1, 0.16 * a))
+	for i in 12:
+		var f: float = float(i) / 12.0
+		draw_circle(Vector2(vp.x * 0.5, vp.y * 0.52), vp.x * (0.16 + 0.48 * f),
+			Color(0.62, 0.55, 0.82, 0.014 * (1.0 - f) * a))
+
+
+func _fit_texture_rect(tex: Texture2D, box: Rect2, cover: bool) -> Rect2:
+	## Scale a texture into `box`, preserving aspect ratio.
+	var ts: Vector2 = tex.get_size()
+	if ts.x <= 0.0 or ts.y <= 0.0:
+		return box
+	var s: float = maxf(box.size.x / ts.x, box.size.y / ts.y) if cover \
+		else minf(box.size.x / ts.x, box.size.y / ts.y)
+	var ds: Vector2 = ts * s
+	return Rect2(box.position + (box.size - ds) * 0.5, ds)
+
+
+# One restrained palette for the whole results screen.
+const RES_BAR      := Color(0.145, 0.118, 0.235)   # header / footer bars
+const RES_BANNER   := Color(0.243, 0.196, 0.376)   # song title banner
+const RES_ACCENT   := Color(0.443, 0.325, 0.706)   # single purple accent
+const RES_INK_DARK := Color(0.145, 0.125, 0.212)   # primary text on light
+const RES_INK_SOFT := Color(0.451, 0.427, 0.529)   # secondary text on light
+const RES_PANEL_BG := Color(0.639, 0.612, 0.714)   # score parallelogram
+const RES_PANEL_INK := Color(0.192, 0.153, 0.322)  # dark purple on the panel
+
+const RES_BG_ART: Texture2D = preload("res://assets/game_loss.png")
+
+# Judgement value colours (labels stay neutral).
+const VAL_PERFECT_TOP := Color(0.66, 0.34, 1.00)   # intro-logo purple
+const VAL_PERFECT_BOT := Color(0.20, 0.72, 1.00)   # intro-logo blue
+const VAL_PERFECT_A := Color(0.35, 0.68, 1.00)   # blue
+const VAL_PERFECT_B := Color(0.62, 0.45, 0.96)   # purple
+const VAL_PERFECT_C := Color(0.38, 0.88, 0.64)   # green
+const VAL_EARLY     := Color(0.24, 0.62, 1.00)   # blue
+const VAL_LATE      := Color(1.00, 0.32, 0.80)   # pink
+const VAL_MISS      := Color(0.90, 0.26, 0.28)   # red
+
+
+func _draw_grad_text(f: Font, pos: Vector2, txt: String, sz: int,
+					 stops: Array, alpha: float) -> void:
+	## Per-character gradient across an arbitrary list of colour stops.
+	var x: float = pos.x
+	var n: int = txt.length()
+	for i in n:
+		var ch: String = txt[i]
+		var tt: float = float(i) / maxf(1.0, float(n - 1))
+		var seg: float = tt * float(stops.size() - 1)
+		var i0: int = clampi(int(floor(seg)), 0, stops.size() - 1)
+		var i1: int = clampi(i0 + 1, 0, stops.size() - 1)
+		var cc: Color = Color(stops[i0]).lerp(Color(stops[i1]), seg - float(i0))
+		draw_string(f, Vector2(x, pos.y), ch, 0, -1, sz,
+			Color(cc.r, cc.g, cc.b, alpha))
+		x += _text_w(f, ch, sz)
+
+
+func _vgrad_item(i: int) -> RID:
+	## Pool of child canvas items, each clipped to one horizontal band.
+	## draw_string() has no clip of its own, so a real top-to-bottom gradient
+	## needs the text drawn once per band into an item that is clipped to it.
+	while _vgrad_items.size() <= i:
+		var it: RID = RenderingServer.canvas_item_create()
+		RenderingServer.canvas_item_set_parent(it, get_canvas_item())
+		_vgrad_items.append(it)
+	return _vgrad_items[i]
+
+
+func _vgrad_clear_all() -> void:
+	for it in _vgrad_items:
+		RenderingServer.canvas_item_clear(it)
+
+
+func _draw_vgrad_text(f: Font, pos: Vector2, txt: String, sz: int,
+					  c_top: Color, c_bot: Color, alpha: float) -> void:
+	## Smooth top-to-bottom gradient across the whole string.
+	if txt.is_empty() or alpha <= 0.01:
 		return
-	var scale: float = maxf(vp.x / tex_size.x, vp.y / tex_size.y)
-	var draw_size: Vector2 = tex_size * scale
-	var pos: Vector2 = (vp - draw_size) * 0.5
-	draw_texture_rect(art, Rect2(pos, draw_size), false, Color(1, 1, 1, a))
+	var w: float = _text_w(f, txt, sz)
+	var asc: float = f.get_ascent(sz)
+	var desc: float = f.get_descent(sz)
+	var top: float = pos.y - asc
+	var h: float = asc + desc
+	var bands: int = 28
+	for i in bands:
+		var it: RID = _vgrad_item(i)
+		RenderingServer.canvas_item_clear(it)
+		var y0: float = top + h * float(i) / bands
+		var bh: float = h / bands + 0.6
+		RenderingServer.canvas_item_set_custom_rect(it, true,
+			Rect2(pos.x - 3.0, y0, w + 6.0, bh))
+		RenderingServer.canvas_item_set_clip(it, true)
+		var tt: float = (float(i) + 0.5) / bands
+		var cc: Color = c_top.lerp(c_bot, tt)
+		f.draw_string(it, pos, txt, HORIZONTAL_ALIGNMENT_LEFT, -1, sz,
+			Color(cc.r, cc.g, cc.b, alpha))
+
+
+func _notification(what: int) -> void:
+	if what == NOTIFICATION_PREDELETE:
+		for it in _vgrad_items:
+			RenderingServer.free_rid(it)
+		_vgrad_items.clear()
+
+
+func _fill_hex_gradient(cx: float, cy: float, half_w: float, half_h: float,
+						flat: float, c_top: Color, c_bot: Color,
+						alpha: float) -> void:
+	## Fill an elongated hexagon with a TOP-TO-BOTTOM gradient by slicing it
+	## into horizontal strips.  The shape's half-width shrinks linearly from
+	## half_w at the vertical centre to half_w * flat at the top and bottom
+	## edges, so each strip is a simple trapezoid.
+	var slices: int = 40
+	for i in slices:
+		var y0: float = cy - half_h + (2.0 * half_h) * float(i) / slices
+		var y1: float = cy - half_h + (2.0 * half_h) * float(i + 1) / slices
+		var hw := func(y: float) -> float:
+			var k: float = clampf(absf(y - cy) / maxf(half_h, 0.001), 0.0, 1.0)
+			return lerpf(half_w, half_w * flat, k)
+		var w0: float = hw.call(y0)
+		var w1: float = hw.call(y1)
+		var tt: float = (float(i) + 0.5) / slices
+		var cc: Color = c_top.lerp(c_bot, tt)
+		draw_colored_polygon(PackedVector2Array([
+			Vector2(cx - w0, y0), Vector2(cx + w0, y0),
+			Vector2(cx + w1, y1), Vector2(cx - w1, y1),
+		]), Color(cc.r, cc.g, cc.b, alpha))
 
 
 func _draw_results(vp: Vector2) -> void:
@@ -1250,120 +1440,189 @@ func _draw_results(vp: Vector2) -> void:
 	if a <= 0.005:
 		return
 
-	var cx: float = vp.x * 0.5
-	var skew: float = 16.0
-	var function_stagger := func(i: float) -> float:
+	var stagger := func(i: float) -> float:
 		return smoothstep(0.30 + i * 0.07, 0.95 + i * 0.07, t)
 
-	_draw_result_backdrop(vp, a)
-	draw_rect(Rect2(Vector2.ZERO, vp), Color(0.035, 0.030, 0.060, 0.55 * a))
-	for i in 14:
-		var f: float = float(i) / 14.0
-		draw_circle(Vector2(cx, vp.y * 0.42), vp.x * (0.20 + 0.42 * f),
-			Color(0.30, 0.25, 0.52, 0.016 * (1.0 - f) * a))
-
-	var s0: float = function_stagger.call(0.0)
-	var w_title: float = vp.x * 0.34
-	var y_title: float = vp.y * 0.10
-	var dx0: float = (1.0 - s0) * 40.0
-	_skew_band(cx + dx0, w_title, y_title, 46.0, skew,
-		Color(RES_BAND_MID.r, RES_BAND_MID.g, RES_BAND_MID.b, 0.92 * s0))
-	_skew_edge(cx + dx0, w_title, y_title + 46.0, skew,
-		Color(0.62, 0.56, 0.85, 0.55 * s0), 1.5)
-	var ts: int = 26
-	_draw_ink(font_heavy, Vector2(cx + dx0 - _text_w(font_heavy, song_title, ts) * 0.5,
-		y_title + 33.0), song_title, ts, Color(RES_INK.r, RES_INK.g, RES_INK.b, s0))
-
-	var s1: float = function_stagger.call(1.0)
-	var w_score: float = vp.x * 0.30
-	var y_score: float = y_title + 58.0
-	var dx1: float = (1.0 - s1) * 55.0
-	_skew_band(cx + dx1, w_score, y_score, 96.0, skew,
-		Color(RES_BAND_DARK.r, RES_BAND_DARK.g, RES_BAND_DARK.b, 0.94 * s1))
-	_skew_band(cx + dx1, w_score, y_score, 4.0, skew,
-		Color(0.70, 0.62, 0.95, 0.30 * s1))
-
-	var sc_txt: String = _fmt_score(score)
-	var sc_sz: int = 58
-	_draw_ink(font_heavy,
-		Vector2(cx + dx1 - _text_w(font_heavy, sc_txt, sc_sz) * 0.5, y_score + 72.0),
-		sc_txt, sc_sz, Color(1, 1, 1, s1), 0.6)
-
-	var y_sub: float = y_score + 96.0
-	_skew_band(cx + dx1, w_score * 0.92, y_sub, 30.0, skew * 0.8,
-		Color(RES_BAND_LIGHT.r, RES_BAND_LIGHT.g, RES_BAND_LIGHT.b, 0.80 * s1))
-	var lbl := "MAX COMBO"
-	var lbl_x: float = cx + dx1 - w_score * 0.92 + 34.0
-	_draw_ink(font_bold, Vector2(lbl_x, y_sub + 21.0), lbl, 14,
-		Color(RES_INK_DIM.r, RES_INK_DIM.g, RES_INK_DIM.b, s1))
-	var mc: String = str(best_combo)
-	_draw_ink(font_heavy,
-		Vector2(cx + dx1 + w_score * 0.92 - 34.0 - _text_w(font_heavy, mc, 18),
-			y_sub + 22.0), mc, 18, Color(RES_INK.r, RES_INK.g, RES_INK.b, s1))
-
-	var s2: float = function_stagger.call(2.0)
 	var g: Array = _grade()
 	var gtxt: String = String(g[0])
-	var gcol: Color = g[1]
 	var pct: float = float(g[2])
-	var gy: float = y_sub + 40.0
-	var gh: float = 132.0
-	_skew_band(cx, vp.x * 0.30, gy, gh, skew,
-		Color(RES_BAND_DARK.r, RES_BAND_DARK.g, RES_BAND_DARK.b, 0.55 * s2))
+	var cx: float = vp.x * 0.5
 
-	var gcy: float = gy + gh * 0.5
-	var chw: float = 96.0
-	var chh: float = 52.0
-	draw_colored_polygon(PackedVector2Array([
-		Vector2(cx - chw, gcy), Vector2(cx - chw * 0.45, gcy - chh),
-		Vector2(cx + chw * 0.45, gcy - chh), Vector2(cx + chw, gcy),
-		Vector2(cx + chw * 0.45, gcy + chh), Vector2(cx - chw * 0.45, gcy + chh),
-	]), Color(gcol.r, gcol.g, gcol.b, 0.13 * s2))
+	_draw_result_backdrop(vp, a)
 
-	var gcol2: Color = g[3]
-	var gsz: int = 78 if gtxt.length() <= 2 else 54
-	var gw: float = _text_w(font_heavy, gtxt, gsz)
-	var gpos := Vector2(cx - gw * 0.5, gcy + gsz * 0.36)
-	var gx: float = gpos.x
-	for i in gtxt.length():
-		var ch: String = gtxt[i]
-		var tt: float = float(i) / maxf(1.0, float(gtxt.length() - 1))
-		var cc: Color = gcol.lerp(gcol2, tt)
-		draw_string_outline(font_heavy, Vector2(gx, gpos.y), ch, 0, -1, gsz, 10,
-			Color(cc.r, cc.g, cc.b, 0.95 * s2))
-		draw_string(font_heavy, Vector2(gx, gpos.y), ch, 0, -1, gsz,
-			Color(1, 1, 1, 0.95 * s2))
-		gx += _text_w(font_heavy, ch, gsz)
+	# ── Bars ─────────────────────────────────────────────────────────────
+	var s0: float = stagger.call(0.0)
+	var head_h: float = maxf(34.0, vp.y * 0.062)
+	var ban_h: float = maxf(50.0, vp.y * 0.105)
+	var bot_h: float = maxf(32.0, vp.y * 0.062)
+	var ban_y: float = head_h
+	var body_y: float = ban_y + ban_h
+	var bot_y: float = vp.y - bot_h
 
+	draw_rect(Rect2(Vector2.ZERO, Vector2(vp.x, head_h)),
+		Color(RES_BAR.r, RES_BAR.g, RES_BAR.b, 0.97 * s0))
+	draw_string(font_thin, Vector2(28.0, head_h * 0.66), "Result", 0, -1, 18,
+		Color(0.92, 0.90, 0.96, 0.92 * s0))
+
+	draw_rect(Rect2(Vector2(0.0, ban_y), Vector2(vp.x, ban_h)),
+		Color(RES_BANNER.r, RES_BANNER.g, RES_BANNER.b, 0.96 * s0))
+	var ts: int = 30
+	draw_string(font_bold,
+		Vector2(cx - _text_w(font_bold, song_title, ts) * 0.5, ban_y + ban_h * 0.66),
+		song_title, 0, -1, ts, Color(0.96, 0.95, 0.99, 0.98 * s0))
+
+	# ── Chibi on the right ───────────────────────────────────────────────
+	var s1: float = stagger.call(1.0)
+	var art_h: float = minf(vp.x * 0.20, (bot_y - body_y) * 0.50)
+	var art_cy: float = body_y + (bot_y - body_y) * 0.58
+
+	# The source art has a lot of empty margin, so the box is oversized to
+	# make the character itself read at a decent size.
+	var chibi: Texture2D = _result_art(gtxt)
+	var ch_h: float = art_h * 2.05
+	var ch_box := Rect2(Vector2(vp.x * 0.505, art_cy - ch_h * 0.5 - art_h * 0.30),
+		Vector2(ch_h * 1.15, ch_h))
+	var ch_rect: Rect2 = _fit_texture_rect(chibi, ch_box, false)
+	ch_rect.position.x += (1.0 - s1) * 40.0
+	draw_texture_rect(chibi, ch_rect, false, Color(1, 1, 1, s1))
+
+	# ── Score column, shifted left of centre ─────────────────────────────
+	# The chibi sits right of it, so the pair reads as centred overall.
+	var s2: float = stagger.call(2.0)
+	var col_cx: float = vp.x * 0.355
+	var col_w: float = vp.x * 0.30
+	var skew: float = 13.0
+	var half_w: float = col_w * 0.64
+
+	var sc_y: float = body_y + (bot_y - body_y) * 0.07
+	var sc_h: float = 96.0
+	_skew_band(col_cx, half_w, sc_y, sc_h, skew,
+		Color(RES_PANEL_BG.r, RES_PANEL_BG.g, RES_PANEL_BG.b, 0.42 * s2))
+
+	# Thin decorative line cluster at the panel's lower-left corner
+	var lc: Color = Color(RES_ACCENT.r, RES_ACCENT.g, RES_ACCENT.b, 0.55 * s2)
+	for i in 5:
+		var off_y: float = sc_h - 6.0 - float(i) * 7.0
+		var seg: float = 46.0 - float(i) * 7.0
+		var fade: float = 1.0 - float(i) * 0.16
+		var lx: float = col_cx - half_w - skew + (sc_h - off_y) * (skew * 2.0 / sc_h)
+		draw_line(Vector2(lx - seg - 10.0, sc_y + off_y),
+			Vector2(lx - 10.0, sc_y + off_y),
+			Color(lc.r, lc.g, lc.b, lc.a * fade), 1.4)
+
+	var sc_txt: String = _fmt_score(score)
+	var sc_sz: int = 46
+	draw_string(font_thin,
+		Vector2(col_cx - _text_w(font_thin, sc_txt, sc_sz) * 0.5, sc_y + 52.0),
+		sc_txt, 0, -1, sc_sz,
+		Color(RES_PANEL_INK.r, RES_PANEL_INK.g, RES_PANEL_INK.b, 0.98 * s2))
+
+	# Percentage — smaller, dark purple, inside the panel
 	var ptxt: String = "%.2f%%" % (pct * 100.0)
-	_draw_ink(font_bold,
-		Vector2(cx - _text_w(font_bold, ptxt, 16) * 0.5, gcy + chh + 26.0),
-		ptxt, 16, Color(RES_INK_DIM.r, RES_INK_DIM.g, RES_INK_DIM.b, s2))
+	var p_sz: int = 22
+	draw_string(font_thin,
+		Vector2(col_cx - _text_w(font_thin, ptxt, p_sz) * 0.5, sc_y + 82.0),
+		ptxt, 0, -1, p_sz,
+		Color(RES_PANEL_INK.r, RES_PANEL_INK.g, RES_PANEL_INK.b, 0.88 * s2))
 
+	# ── Grade letter with a split rule either side of it ─────────────────
+	var s3: float = stagger.call(3.0)
+	var gsz: int = 62 if gtxt.length() <= 2 else 44
+	var gcy: float = sc_y + sc_h + 66.0
+	var g_w: float = _text_w(font_heavy, gtxt, gsz)
+	var bar_h: float = 4.0
+	var gap: float = g_w * 0.5 + 11.0        # clear space around the letter
+	var reach: float = g_w * 0.5 + 74.0      # outer end of each segment
+	var rule_col := Color(RES_PANEL_INK.r, RES_PANEL_INK.g, RES_PANEL_INK.b,
+		0.88 * s3)
+
+	for side in [-1.0, 1.0]:
+		var x_in: float = col_cx + side * gap
+		var x_out: float = col_cx + side * reach
+		draw_rect(Rect2(Vector2(minf(x_in, x_out), gcy - bar_h * 0.5),
+			Vector2(absf(x_out - x_in), bar_h)), rule_col)
+		# Small hollow diamond (square on its diagonal, vertex down) sitting
+		# flush against the outer end of each segment, stroked at the same
+		# weight as the line so the two read as one piece.
+		var d: float = 7.0
+		var dc: float = x_out + side * d
+		draw_polyline(PackedVector2Array([
+			Vector2(dc, gcy - d), Vector2(dc + d, gcy),
+			Vector2(dc, gcy + d), Vector2(dc - d, gcy),
+			Vector2(dc, gcy - d),
+		]), rule_col, bar_h)
+
+	var g_col: Color = Color(g[1])
+	var g_glow: Color = Color(g[3])
+	var g_pos := Vector2(col_cx - g_w * 0.5, gcy + gsz * 0.36)
+	# Two wide, very faint outline passes read as a soft halo rather than a
+	# hard stroke; the letter itself is drawn in the heavy weight on top.
+	draw_string_outline(font_heavy, g_pos, gtxt, 0, -1, gsz, 14,
+		Color(g_glow.r, g_glow.g, g_glow.b, 0.16 * s3))
+	draw_string_outline(font_heavy, g_pos, gtxt, 0, -1, gsz, 7,
+		Color(g_glow.r, g_glow.g, g_glow.b, 0.22 * s3))
+	draw_string(font_heavy, g_pos, gtxt, 0, -1, gsz,
+		Color(g_col.r, g_col.g, g_col.b, 0.99 * s3))
+
+	# ── Judgement counts ─────────────────────────────────────────────────
 	var rows := [
-		["PERFECT", counts["PERFECT"], COL_PERFECT],
-		["EARLY", counts["EARLY"], COL_EARLY],
-		["LATE", counts["LATE"], COL_LATE],
-		["MISS", counts["MISS"], COL_MISS],
+		["PERFECT", counts["PERFECT"]],
+		["EARLY", counts["EARLY"]],
+		["LATE", counts["LATE"]],
+		["MISS", counts["MISS"]],
 	]
-	var axis: float = cx - 6.0
-	var y_row: float = gy + gh + 44.0
+	var val_stops := [
+		[VAL_PERFECT_A, VAL_PERFECT_B, VAL_PERFECT_C],
+		[VAL_EARLY, VAL_EARLY],
+		[VAL_LATE, VAL_LATE],
+		[VAL_MISS, VAL_MISS],
+	]
+	var axis: float = col_cx - 4.0
+	var y_row: float = gcy + gsz * 0.36 + 48.0
+	var lab_sz: int = 18
+	var val_sz: int = 23
+	var row_gap: float = 33.0
 	for i in rows.size():
-		var s3: float = function_stagger.call(3.0 + float(i) * 0.35)
+		var s4: float = stagger.call(4.0 + float(i) * 0.30)
 		var lab: String = String(rows[i][0])
 		var val: String = str(rows[i][1])
-		var acc: Color = rows[i][2]
-		var ry: float = y_row + float(i) * 34.0
-		var dx: float = (1.0 - s3) * 26.0
+		var ry: float = y_row + float(i) * row_gap
+		var dx: float = (1.0 - s4) * 18.0
+		draw_string(font_thin,
+			Vector2(axis + dx - _text_w(font_thin, lab, lab_sz), ry),
+			lab, 0, -1, lab_sz,
+			Color(RES_INK_SOFT.r, RES_INK_SOFT.g, RES_INK_SOFT.b, 0.95 * s4))
+		if i == 0:
+			# PERFECT: smooth top-to-bottom purple -> blue, as on the intro logo
+			_draw_vgrad_text(font_bold, Vector2(axis + dx + 28.0, ry), val, val_sz,
+				VAL_PERFECT_TOP, VAL_PERFECT_BOT, 0.97 * s4)
+		else:
+			_draw_grad_text(font_bold, Vector2(axis + dx + 28.0, ry), val, val_sz,
+				val_stops[i], 0.97 * s4)
 
-		_draw_ink(font_bold,
-			Vector2(axis + dx - _text_w(font_bold, lab, 17), ry), lab, 17,
-			Color(acc.r, acc.g, acc.b, 0.92 * s3))
-		_draw_ghost_number(Vector2(axis + dx + 26.0, ry + 4.0), val, 26, acc, s3)
+	# ── MAX COMBO, under the judgement list ──────────────────────────────
+	var s5: float = stagger.call(5.6)
+	var mc_y: float = y_row + float(rows.size()) * row_gap + 16.0
+	draw_string(font_thin,
+		Vector2(axis - _text_w(font_thin, "MAX COMBO", lab_sz), mc_y),
+		"MAX COMBO", 0, -1, lab_sz,
+		Color(RES_INK_SOFT.r, RES_INK_SOFT.g, RES_INK_SOFT.b, 0.95 * s5))
+	draw_string(font_bold, Vector2(axis + 28.0, mc_y), str(best_combo),
+		0, -1, val_sz,
+		Color(RES_INK_DARK.r, RES_INK_DARK.g, RES_INK_DARK.b, 0.95 * s5))
 
-	var f_txt := "press  R  to replay"
+	# ── Footer ───────────────────────────────────────────────────────────
+	draw_rect(Rect2(Vector2(0.0, bot_y), Vector2(vp.x, bot_h)),
+		Color(RES_BAR.r, RES_BAR.g, RES_BAR.b, 0.97 * a))
+	var foot_col := Color(0.92, 0.90, 0.96, 0.90 * a)
+	var retry_txt := "Retry  (R)"
+	draw_string(font_thin, Vector2(28.0, bot_y + bot_h * 0.66), "Back  (ESC)",
+		0, -1, 15, foot_col)
+	draw_string(font_thin,
+		Vector2(vp.x - 28.0 - _text_w(font_thin, retry_txt, 15), bot_y + bot_h * 0.66),
+		retry_txt, 0, -1, 15, foot_col)
 	if ImuInput.link_up:
-		f_txt = "flick  UP  to replay      flick  DOWN  to quit      or press  R"
-	_draw_ink(font_bold,
-		Vector2(cx - _text_w(font_bold, f_txt, 14) * 0.5, vp.y - 30.0),
-		f_txt, 14, Color(RES_INK_DIM.r, RES_INK_DIM.g, RES_INK_DIM.b, 0.75 * a))
+		var f_txt := "flick UP to replay      flick DOWN to quit"
+		draw_string(font_thin,
+			Vector2(cx - _text_w(font_thin, f_txt, 13) * 0.5, bot_y + bot_h * 0.66),
+			f_txt, 0, -1, 13, Color(0.72, 0.70, 0.80, 0.85 * a))
