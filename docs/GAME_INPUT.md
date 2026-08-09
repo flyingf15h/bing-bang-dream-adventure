@@ -7,57 +7,9 @@
 
 <img width=90% alt="image" src="https://github.com/user-attachments/assets/6856caf3-e814-4170-a9eb-1257b985db98" />
 
-
-# Gameplay
-
-Bing bang dream adventure takes six directions. Flick the board up-and-right and the
-note in the upper-right lane is hit, the same as clicking there with the mouse
-or pressing its key. This is how that works, how to set it up over either
-transport, and what to do when a flick does not land.
-
 ---
 
-## The path a flick takes
-
-```
-board                       host                                game
------                       ----                                ----
-ICM-45605 gyro
-  |  800 Hz ODR, sampled out at 400 Hz as D records
-  |  USB CDC  or  UDP/WiFi
-  v
-                     game_bridge.py
-                       FlickDetector  -> bearing, degrees clockwise from up
-                       (the whole stroke integrated, measured against gravity)
-                       |  JSON datagram, UDP 127.0.0.1:3334
-                       v
-                                              ImuInput.gd
-                                                bearing -> game angle
-                                                v
-                                              TapInputBus.report_direction()
-                                                v
-                                              node_2d.gd _on_tap -> _try_hit()
-```
-
-The last two steps are the same ones a mouse click goes through, so a flick is
-scored by exactly the code that scores everything else. Nothing about timing
-windows, combo or judgement is duplicated for the IMU.
-
-### Why there is a bridge process
-
-Godot has UDP built in and **no serial port support at all** — no engine API
-for a COM port, and reaching one means shipping a GDExtension binary per
-platform. So the game only ever speaks UDP on localhost, and the bridge is
-what turns that into a choice of transport.
-
-Detection runs in the bridge rather than in GDScript or on the board because
-`FlickDetector` already exists, is tuned, and is what the dashboard draws. One
-implementation means tuning it once and having the game and the dashboard
-agree about what a flick is.
-
----
-
-## Setting it up
+## Running the game
 
 Install the host dependencies once:
 
