@@ -691,8 +691,36 @@ once with each board in hand — it records which board threw the flicks and
 stores that board's answer, and it ignores flicks from the other one mid-run
 rather than solving for a correction that fits neither.
 
+**Both boards are held the same way up.** Nothing mirrors the second one: the
+front axis defaults to the same axis for both, and `--board hand=target:+Y` is
+there for the case where the two units are physically mounted differently, not
+because the right hand is expected to be a mirror of the left.
+
 A board with no hand named plays everything, exactly as before. That is still
 the normal setup and nothing about it changed.
+
+### What the game shows with two of them
+
+Everything that describes a board is per board, because the case worth showing
+is the one where the two disagree — and a readout averaged across them is at
+its most misleading exactly when someone is trying to work out why half the
+chart stopped scoring.
+
+* **Two arrows**, planted either side of the ring's centre, blue on the left and
+  pink on the right. Each follows its own board, keeps its own flash when a
+  flick lands, and carries its own refusal line — prefixed `blue:` or `pink:` so
+  advice about one hand is not read as advice about the other. With one board
+  there is one arrow in the middle, as before, and it still takes the colour of
+  the lane it points at.
+* **Per-board link, rate, flick and refusal counts** in the debug panel and in
+  `ImuInput.debug_line()`, side by side.
+* **A board that stops talking is noticed on its own.** The bridge's own link
+  timeout cannot see it — the port keeps receiving because the *other* board is
+  still sending — so the game times out each board separately and says which
+  colour has gone quiet. Its arrow disappears; the other keeps playing.
+* **Dropped datagrams are counted per board.** Each bridge numbers its own from
+  zero, so a single counter would read two interleaved sequences as a flood of
+  losses on a link that has not lost anything.
 
 ---
 

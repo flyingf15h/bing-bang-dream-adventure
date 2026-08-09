@@ -838,6 +838,16 @@ func _refresh_readouts() -> void:
 	# not the same thing and the difference is invisible everywhere else: a
 	# port that opens and then delivers nothing reports a happy link and no
 	# flicks, for ever.
+	if ImuInput.two_handed():
+		# Two boards are two of every one of these, and the interesting case is
+		# always the one where they disagree -- so they are shown side by side
+		# rather than folded into a number that describes neither.
+		_refresh_two_board_readouts()
+		_set_row("hit_rate", "%d hit   %d hit nothing" % [
+			_lane_hits, _lane_misses], Color(1, 1, 1, 0.7))
+		_refresh_aim_readout()
+		_refresh_bias_readout()
+		return
 	if ImuInput.transport == "demo":
 		_set_row("board", "demo mode -- made-up flicks, no board",
 			Color(0.8, 0.8, 1.0))
@@ -888,7 +898,91 @@ func _refresh_readouts() -> void:
 
 	_set_row("hit_rate", "%d hit   %d hit nothing" % [_lane_hits, _lane_misses],
 		Color(1, 1, 1, 0.7))
+	_refresh_aim_readout()
+	_refresh_bias_readout()
 
+
+## The Link and Live rows, one board's worth of each, side by side.
+##
+## Every row here answers a question about a particular board -- is it there,
+## how fast is it being swung, what did it last refuse -- and with two boards
+## the answers differ. A single set of numbers taken from whichever board spoke
+## last is the one display that can be wrong while looking right, and it is
+## wrong exactly when somebody is using this panel to find out why half the
+## chart is not scoring.
+func _refresh_two_board_readouts() -> void:
+	var board_parts: PackedStringArray = []
+	var count_parts: PackedStringArray = []
+	var refusal_parts: PackedStringArray = []
+	var bearing_parts: PackedStringArray = []
+	var swing_parts: PackedStringArray = []
+	var flick_parts: PackedStringArray = []
+	var worst := Color(0.75, 0.85, 1.0)
+	var peak_swing: float = 0.0
+	var peak_threshold: float = 1.0
+
+	for hand in ImuInput.hands:
+		var who: String = ImuInput.hand_label(hand)
+		var state: Dictionary = ImuInput.state_of(hand)
+
+		if not ImuInput.hand_connected(hand):
+			board_parts.append("%s GONE -- %s" % [who, state["status"]])
+			worst = Color(1.0, 0.8, 0.45)
+		elif bool(state["stalled"]):
+			board_parts.append("%s FROZEN -- replug it" % who)
+			worst = Color(1.0, 0.55, 0.55)
+		elif ImuInput.hand_rate_hz(hand) < 1.0:
+			board_parts.append("%s open, no samples" % who)
+			worst = Color(1.0, 0.8, 0.45)
+		else:
+			board_parts.append("%s %.0f Hz" % [who, ImuInput.hand_rate_hz(hand)])
+
+		var lost: int = int(state["dropped"])
+		count_parts.append("%s %d flicks  %d refused%s" % [
+			who, int(state["flicks"]), int(state["refused"]),
+			"  %d lost" % lost if lost > 0 else ""])
+		refusal_parts.append("%s %s" % [who,
+			state["refusal"] if String(state["refusal"]) != "" else "none"])
+
+		var angle: float = ImuInput.hand_angle(hand)
+		if is_nan(angle):
+			bearing_parts.append("%s -- (no motion)" % who)
+		else:
+			bearing_parts.append("%s %.0f deg -> lane %d" % [
+				who, angle, _lane_of(angle)])
+
+		var threshold: float = maxf(1.0, ImuInput.hand_threshold_dps(hand))
+		var swing: float = ImuInput.hand_swing_dps(hand)
+		swing_parts.append("%s %.0f of %.0f%s" % [who, swing, threshold,
+			" (counts)" if swing >= threshold else ""])
+		if swing >= peak_swing:
+			peak_swing = swing
+			peak_threshold = threshold
+
+		if is_nan(float(state["bearing"])):
+			flick_parts.append("%s none yet" % who)
+		else:
+			var went: float = ImuInput.game_angle_of(
+				float(state["bearing"]), hand)
+			flick_parts.append("%s lane %d  str %.2f  lag %.0f ms" % [
+				who, _lane_of(went), float(state["strength"]),
+				float(state["lag_ms"])])
+
+	_set_row("board", "   ".join(board_parts), worst)
+	_set_row("counts", "   ".join(count_parts), Color(1, 1, 1, 0.85))
+	_set_row("refusal", "   ".join(refusal_parts), Color(1.0, 0.85, 0.85, 0.9))
+	_set_row("bearing", "   ".join(bearing_parts), Color(1, 1, 1, 0.85))
+	_set_row("swing", "   ".join(swing_parts), Color(1, 1, 1, 0.7))
+	_set_row("flick", "   ".join(flick_parts), Color(1, 1, 1, 0.85))
+
+	# One bar and two boards: it follows whichever is being swung hardest,
+	# which is the one the player is asking about when they look at it.
+	var bar: ProgressBar = _rows["swing_bar"]
+	bar.max_value = peak_threshold
+	bar.value = minf(peak_swing, peak_threshold)
+
+
+func _refresh_aim_readout() -> void:
 	# One line per board. With two of them the corrections are different
 	# numbers for different mountings, and showing only one would be showing an
 	# adjustment that half the flicks on screen are not getting.
@@ -912,6 +1006,9 @@ func _refresh_readouts() -> void:
 		_set_row("aim", "none -- bearings used as reported", Color(1, 1, 1, 0.5))
 	else:
 		_set_row("aim", "   ".join(aim_parts), Color(0.75, 0.95, 1.0))
+
+
+func _refresh_bias_readout() -> void:
 	if ImuInput.board_gyro_bias.size() == 3:
 		_set_row("stored_bias", "%+.3f  %+.3f  %+.3f dps" % [
 			float(ImuInput.board_gyro_bias[0]), float(ImuInput.board_gyro_bias[1]),

@@ -97,18 +97,34 @@ var finish_ui: float = -1.0
 var font_bold: FontVariation
 var font_heavy: FontVariation
 
-## --- the IMU arrow ---------------------------------------------------------
-## Where the board is pointed and how hard it is being swung, smoothed for
-## drawing. None of this is read by scoring: the arrow is a display of an input
+## --- the IMU arrows --------------------------------------------------------
+## Where each board is pointed and how hard it is being swung, smoothed for
+## drawing. None of this is read by scoring: an arrow is a display of an input
 ## that has already been judged elsewhere, so a bug in here cannot cost a note.
-var imu_angle: float = NAN      # smoothed heading, game convention
-var imu_reach: float = 0.0      # 0..1, swing rate against the flick threshold
-var imu_flash: float = 0.0      # 1.0 the moment a flick lands, then decays
-var imu_refused: float = 0.0    # 1.0 when a movement was refused, then decays
-var imu_refused_text: String = ""
-## Whether the last flick landed on a note. Everything that is not a scoring
-## hit draws grey, so that colour on screen carries exactly one meaning.
-var imu_last_hit: bool = false
+##
+## One entry per board, keyed by the hand the bridge named -- "" when there is
+## a single board, which is a mouse player's arrow and the arrangement this
+## screen had before there were two. With two boards there are two arrows and
+## they have to be separate all the way down: they point in different
+## directions, they flash at different moments, and one of them is what the
+## player is looking for when a blue note goes past untouched.
+var imu_arrows: Dictionary = {}
+
+
+func _arrow(hand: String) -> Dictionary:
+	if not imu_arrows.has(hand):
+		imu_arrows[hand] = {
+			"angle": NAN,       # smoothed heading, game convention
+			"reach": 0.0,       # 0..1, swing rate against the flick threshold
+			"flash": 0.0,       # 1.0 the moment a flick lands, then decays
+			"refused": 0.0,     # 1.0 when a movement was refused, then decays
+			"text": "",
+			# Whether that board's last flick landed on a note. Everything that
+			# is not a scoring hit draws grey, so colour on screen carries
+			# exactly one meaning.
+			"hit": false,
+		}
+	return imu_arrows[hand]
 
 
 func _ready() -> void:
@@ -408,10 +424,20 @@ const IMU_THRESHOLD_FALLBACK_DPS: float = 150.0
 
 
 func _tick_imu(delta: float) -> void:
-	imu_flash = maxf(0.0, imu_flash - delta * 2.6)
+	# Every arrow that exists, not only the boards currently talking: an arrow
+	# belonging to a board that has just gone away still has a flash and a
+	# refusal to fade out, and stopping the decay would freeze it mid-strike.
+	for hand in ImuInput.active_hands():
+		_arrow(String(hand))
+	for key in imu_arrows:
+		_tick_imu_arrow(String(key), imu_arrows[key], delta)
+
+
+func _tick_imu_arrow(hand: String, arrow: Dictionary, delta: float) -> void:
+	arrow["flash"] = maxf(0.0, float(arrow["flash"]) - delta * 2.6)
 	# Slower than the flick's, because this one has to be read rather than just
 	# noticed: it carries a line of text saying what to change.
-	imu_refused = maxf(0.0, imu_refused - delta * 0.55)
+	arrow["refused"] = maxf(0.0, float(arrow["refused"]) - delta * 0.55)
 
 	# The reach is how close the swing is to counting as a flick, so a full
 	# length arrow means "that would have registered". This is the part that
@@ -420,36 +446,41 @@ func _tick_imu(delta: float) -> void:
 	# look completely different here: a short arrow in the right place, or a
 	# long one pointing somewhere else.
 	var target: float = 0.0
-	if ImuInput.link_up and ImuInput.motion_supported:
-		var threshold: float = ImuInput.flick_threshold_dps
+	if ImuInput.link_up and ImuInput.hand_motion(hand) \
+			and ImuInput.hand_connected(hand):
+		var threshold: float = ImuInput.hand_threshold_dps(hand)
 		if threshold <= 0.0:
 			threshold = IMU_THRESHOLD_FALLBACK_DPS
-		target = clampf(ImuInput.live_swing_dps / threshold, 0.0, 1.0)
+		var swing: float = ImuInput.hand_swing_dps(hand)
+		target = clampf(swing / threshold, 0.0, 1.0)
 
-		if target > IMU_STEER_FLOOR and not is_nan(ImuInput.live_angle_deg):
-			if is_nan(imu_angle):
-				imu_angle = ImuInput.live_angle_deg
+		var live: float = ImuInput.hand_angle(hand)
+		if target > IMU_STEER_FLOOR and not is_nan(live):
+			if is_nan(float(arrow["angle"])):
+				arrow["angle"] = live
 			else:
 				# Round the short way, so a swing across the 0/360 seam does
 				# not send the arrow the long way round the ring.
-				imu_angle = fposmod(rad_to_deg(lerp_angle(
-					deg_to_rad(imu_angle), deg_to_rad(ImuInput.live_angle_deg),
+				arrow["angle"] = fposmod(rad_to_deg(lerp_angle(
+					deg_to_rad(float(arrow["angle"])), deg_to_rad(live),
 					minf(1.0, delta * 20.0))), 360.0)
 
-	imu_reach += (target - imu_reach) * minf(1.0, delta * 14.0)
+	arrow["reach"] = float(arrow["reach"]) \
+		+ (target - float(arrow["reach"])) * minf(1.0, delta * 14.0)
 
 
 func _on_imu_flick(record: Dictionary) -> void:
 	if not record.has("bearing"):
 		return
+	var hand := String(record.get("hand", ""))
+	var arrow := _arrow(hand)
 	# Snap rather than ease. The flick's own bearing is measured over the whole
 	# gesture and is what scoring used; the smoothed heading is an approximation
 	# of it that lags by a frame or two. Showing the arrow anywhere but on the
 	# lane that was hit would make a correct hit look like a mis-aimed one.
-	imu_angle = ImuInput.game_angle_of(float(record["bearing"]),
-		String(record.get("hand", "")))
-	imu_flash = 1.0
-	imu_refused = 0.0
+	arrow["angle"] = ImuInput.game_angle_of(float(record["bearing"]), hand)
+	arrow["flash"] = 1.0
+	arrow["refused"] = 0.0
 
 
 func _on_imu_refused(record: Dictionary) -> void:
@@ -459,14 +490,15 @@ func _on_imu_refused(record: Dictionary) -> void:
 	## rejected and a board that is unplugged both produce silence, and a
 	## player cannot tell which they are looking at. So a refusal gets its own
 	## mark -- deliberately not the flick's, since it did not score.
+	var hand := String(record.get("hand", ""))
+	var arrow := _arrow(hand)
 	if record.has("bearing"):
-		imu_angle = ImuInput.game_angle_of(float(record["bearing"]),
-			String(record.get("hand", "")))
-	imu_refused = 1.0
-	imu_refused_text = String(record.get("detail", ""))
+		arrow["angle"] = ImuInput.game_angle_of(float(record["bearing"]), hand)
+	arrow["refused"] = 1.0
+	arrow["text"] = String(record.get("detail", ""))
 	# Whatever the last flick did, this movement scored nothing, and the
 	# colour rules key off that flag rather than off which record was newest.
-	imu_last_hit = false
+	arrow["hit"] = false
 
 
 func _new_spark(x: float) -> Dictionary:
@@ -763,6 +795,16 @@ func _explain_no_hit(angle_deg: float, waiting: int, near_aim: float,
 	if waiting == 0:
 		text = ("that flick was fine -- there were no%s notes left to hit"
 			% colour)
+	elif near_aim > 1e8:
+		# Notes of that colour are still to come, but none is anywhere near due,
+		# so there is nothing to have aimed at and no aim to report. Saying "you
+		# aimed a billion degrees wide" is what the branch below did with the
+		# sentinel, and it happens twice as often with two boards: each one sees
+		# only its own colour, so either can easily flick into a stretch of
+		# chart that belongs entirely to the other.
+		text = ("nothing%s was due just then -- that flick was early by more "
+			+ "than the window, or the notes there are the other colour"
+			) % colour
 	elif near_aim > tolerance:
 		# Aimed wide. The lane it should have gone to is worth naming, because
 		# "70 degrees off" is a number and "the lane at 120" is a place.
@@ -779,9 +821,10 @@ func _explain_no_hit(angle_deg: float, waiting: int, near_aim: float,
 		text = ("no note was both within %.0f deg and within %.0f ms of that "
 			+ "flick") % [tolerance, near]
 
-	imu_refused = 1.0
-	imu_refused_text = text
-	imu_last_hit = false
+	var arrow := _arrow(hand)
+	arrow["refused"] = 1.0
+	arrow["text"] = text
+	arrow["hit"] = false
 	# Printed as well as drawn. The on-screen line fades, and whoever is
 	# debugging this is usually reading the console beside the bridge's own
 	# output, where the two halves of the story belong together.
@@ -799,7 +842,7 @@ func _on_tap(event: TapEvent) -> void:
 		# arrow reads this to decide whether to draw a flick at all, and a stale
 		# `true` would show a flick thrown at a paused song as a scoring hit.
 		if event.has_direction():
-			imu_last_hit = false
+			_arrow(event.hand)["hit"] = false
 		return
 
 	# A flick from the IMU names its direction outright: the board is not
@@ -812,7 +855,7 @@ func _on_tap(event: TapEvent) -> void:
 		# whether a note was there. The ordering is what makes it usable:
 		# ImuInput reports to the bus before it emits flick_received, so by the
 		# time the arrow is told about the flick, this has already run.
-		imu_last_hit = hit
+		_arrow(event.hand)["hit"] = hit
 		return
 
 	var offset: Vector2 = event.screen_position - centre
@@ -1294,8 +1337,15 @@ func _draw_playfield() -> void:
 				Color(tint.r, tint.g, tint.b, 0.85))
 
 
+## How far apart the two arrows are planted, as a fraction of the ring's
+## radius. Far enough that two boards held still are two dots rather than one
+## smudge, and near enough that each arrow still reads as coming from the
+## middle and pointing at a lane.
+const IMU_ARROW_SPLIT: float = 0.085
+
+
 func _draw_imu_arrow() -> void:
-	## A 2D arrow in the middle of the ring showing the board in the hand.
+	## An arrow per board in the middle of the ring, showing what is in the hand.
 	##
 	## It points where the board is being swung, grows with how hard, and
 	## flashes down the lane a flick landed in. Drawn in the same angle
@@ -1310,6 +1360,30 @@ func _draw_imu_arrow() -> void:
 		return
 	if not ImuInput.board_connected:
 		return          # the bridge is talking, but not about a board
+
+	var shown: Array = ImuInput.active_hands()
+	for index in shown.size():
+		var hand := String(shown[index])
+		if not ImuInput.hand_connected(hand):
+			continue    # that board has gone; the other one keeps its arrow
+		# Planted left and right of centre so two arrows can be told apart at a
+		# glance even when both boards are doing the same thing -- and on the
+		# side matching the hand that holds them, so which arrow is which is
+		# something you read off the screen rather than remember.
+		var origin := centre
+		if shown.size() > 1:
+			origin.x += (-1.0 if hand == "left" else 1.0) \
+				* radius * IMU_ARROW_SPLIT
+		_draw_one_imu_arrow(hand, _arrow(hand), origin, shown.size() > 1)
+
+
+func _draw_one_imu_arrow(hand: String, arrow: Dictionary, origin: Vector2,
+		two_boards: bool) -> void:
+	var imu_angle: float = float(arrow["angle"])
+	var imu_reach: float = float(arrow["reach"])
+	var imu_flash: float = float(arrow["flash"])
+	var imu_refused: float = float(arrow["refused"])
+	var imu_last_hit: bool = bool(arrow["hit"])
 	if is_nan(imu_angle):
 		return
 
@@ -1338,11 +1412,12 @@ func _draw_imu_arrow() -> void:
 		# the arrow above the vanishing threshold for as long as it is drawn.
 		reach = maxf(pulse, imu_flash)
 	if refused > 0.01 and not flicks_only:
-		_draw_imu_refusal(refused)
+		_draw_imu_refusal(refused, String(arrow["text"]), origin, hand,
+			two_boards)
 	if reach < 0.01:
 		# Still board, no flick: a dot, so the arrow has somewhere to grow from
 		# and its absence still means "no board" rather than "not moving".
-		draw_circle(centre, 3.0, Color(1, 1, 1, 0.22))
+		draw_circle(origin, 3.0, Color(1, 1, 1, 0.22))
 		return
 
 	var v := _vec(imu_angle)
@@ -1352,6 +1427,11 @@ func _draw_imu_arrow() -> void:
 	# needing a number: right hand lanes pink, left hand lanes blue, exactly as
 	# the notes arriving in them are coloured.
 	#
+	# With two boards the arrow takes its board's colour instead, and keeps it
+	# wherever the board is pointed. The lane colour would be saying something
+	# the player already knows -- a blue board can only hit blue notes -- while
+	# hiding the one thing two arrows have to say, which of them is moving.
+	#
 	# Except that colour is reserved for a flick that actually scored. Live
 	# movement is not a hit, a refusal is not a hit, and a well-aimed flick
 	# into an empty lane is not a hit either -- all three draw grey. It makes
@@ -1359,6 +1439,8 @@ func _draw_imu_arrow() -> void:
 	# being asked over and over while a board is being set up.
 	var lane: int = _nearest_sector(imu_angle)
 	var tint: Color = R_OUTER if lane <= 3 else L_OUTER
+	if two_boards:
+		tint = L_OUTER if hand == "left" else R_OUTER
 	if ImuSettings.colour_only_hits and not (imu_last_hit and imu_flash > 0.0):
 		tint = IMU_GREY
 	var col: Color = tint.lerp(Color(1, 1, 1), 0.35 + 0.45 * pulse)
@@ -1372,20 +1454,20 @@ func _draw_imu_arrow() -> void:
 	var r1: float = radius * (0.17 + 0.40 * reach)
 	var head: float = 13.0 + 11.0 * reach
 	var half_w: float = 7.0 + 5.5 * reach
-	var tip := centre + v * r1
-	var neck := centre + v * maxf(r0, r1 - head)
+	var tip := origin + v * r1
+	var neck := origin + v * maxf(r0, r1 - head)
 
 	# A wide, faint pass under a narrow bright one: the glow keeps the arrow
 	# readable over the video without the shaft itself having to be thick
 	# enough to hide notes behind it.
-	draw_line(centre + v * r0, neck,
+	draw_line(origin + v * r0, neck,
 		Color(tint.r, tint.g, tint.b, alpha * 0.34), 10.0 + 9.0 * reach)
-	draw_line(centre + v * r0, neck,
+	draw_line(origin + v * r0, neck,
 		Color(col.r, col.g, col.b, alpha), 2.6 + 2.6 * reach)
 	draw_colored_polygon(PackedVector2Array([
 		tip, neck + side * half_w, neck - side * half_w]),
 		Color(col.r, col.g, col.b, alpha))
-	draw_circle(centre, 3.0 + 3.0 * reach,
+	draw_circle(origin, 3.0 + 3.0 * reach,
 		Color(col.r, col.g, col.b, minf(0.9, alpha + 0.15)))
 
 	# At full reach the swing is past the threshold, so a flick in this
@@ -1401,28 +1483,40 @@ func _draw_imu_arrow() -> void:
 		var streak := Color(1, 1, 1)
 		if ImuSettings.colour_only_hits and not imu_last_hit:
 			streak = IMU_GREY
-		var strength: float = clampf(ImuInput.last_strength, 0.0, 1.0)
+		var strength: float = clampf(
+			float(ImuInput.state_of(hand)["strength"]), 0.0, 1.0)
 		var flick_end: float = radius * (0.62 + 0.30 * strength)
-		draw_line(tip, centre + v * flick_end,
+		draw_line(tip, origin + v * flick_end,
 			Color(streak.r, streak.g, streak.b, 0.55 * pulse), 2.0 + 4.0 * pulse)
-		draw_circle(centre + v * flick_end, 4.0 + 9.0 * pulse,
+		draw_circle(origin + v * flick_end, 4.0 + 9.0 * pulse,
 			Color(streak.r, streak.g, streak.b, 0.45 * pulse))
 
 
-func _draw_imu_refusal(refused: float) -> void:
+func _draw_imu_refusal(refused: float, text: String, origin: Vector2,
+		hand: String, two_boards: bool) -> void:
 	## A dashed ring and the bridge's own sentence, for a movement that was
 	## seen and not counted. Grey rather than a lane colour, because the point
 	## is precisely that no lane was chosen.
 	var col := Color(0.85, 0.80, 0.90, 0.30 + 0.45 * refused)
 	_dotted_circle(radius * 0.30, col, 6.0, 7.0, 2.0)
-	if imu_refused_text == "":
+	if text == "":
 		return
+	# Named when there are two, because "flick harder" is advice about one hand
+	# and following it with the wrong one is worse than not following it. The
+	# two sentences also sit one above the other rather than on top of each
+	# other, since both boards can be refused within the same second.
+	var line: String = text
+	var drop: float = 0.0
+	if two_boards:
+		line = "%s: %s" % [ImuInput.hand_label(hand), text]
+		drop = 0.0 if hand == "left" else 20.0
 	var size: int = 14
-	var w: float = font_bold.get_string_size(imu_refused_text, 0, -1, size).x
-	var at := Vector2(centre.x - w * 0.5, centre.y + radius * 0.30 + 26.0)
-	draw_string_outline(font_bold, at, imu_refused_text, 0, -1, size, 5,
+	var w: float = font_bold.get_string_size(line, 0, -1, size).x
+	var at := Vector2(origin.x - w * 0.5,
+		centre.y + radius * 0.30 + 26.0 + drop)
+	draw_string_outline(font_bold, at, line, 0, -1, size, 5,
 		Color(0.02, 0.01, 0.06, 0.75 * refused))
-	draw_string(font_bold, at, imu_refused_text, 0, -1, size,
+	draw_string(font_bold, at, line, 0, -1, size,
 		Color(1.0, 0.86, 0.86, 0.35 + 0.55 * refused))
 
 
