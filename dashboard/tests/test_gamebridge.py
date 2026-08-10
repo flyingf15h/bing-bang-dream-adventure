@@ -42,7 +42,7 @@ DT = 0.005
 LEVEL = np.array([0.0, 0.0, 1.0])
 STILL = np.zeros(3)
 
-#: node_2d.gd's default layout: lane -> angle, measured counter-clockwise from
+#: Gameplay.gd's default layout: lane -> angle, measured counter-clockwise from
 #: screen right, which is what _vec(a) = (cos a, -sin a) draws.
 GAME_SECTOR_ANGLE = {1: 60.0, 2: 0.0, 3: 300.0, 4: 240.0, 5: 180.0, 6: 120.0}
 
@@ -58,7 +58,7 @@ def game_angle_of(bearing_deg):
 
 
 def nearest_lane(angle_deg):
-    """_nearest_sector() from node_2d.gd, restated."""
+    """_nearest_sector() from Gameplay.gd, restated."""
     a = angle_deg % 360.0
     best, best_d = 1, 1e9
     for lane, centre in GAME_SECTOR_ANGLE.items():
@@ -370,7 +370,7 @@ check("demo flicks are well-formed flick records",
       str(demo_records[0]) if demo_records else "none")
 
 # ---------------- live motion, which the on-screen arrow follows ----------------
-# The arrow in node_2d.gd is drawn from these. They are not inputs and nothing
+# The arrow in Gameplay.gd is drawn from these. They are not inputs and nothing
 # is scored from them, so the thing that can go wrong is subtler than a missed
 # flick: an arrow that points somewhere other than the lane the flick lands in
 # makes correct scoring look broken, and is the one failure worth testing for.

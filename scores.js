@@ -1,2 +1,0 @@
-window.__scores = [{"id":"1786261000-4821","song":"Bad Apple!!","score":988270,"grade":"SS","pct":0.98827,"max_combo":162,"perfect":162,"early":0,"late":0,"miss":1,"at":"2026-08-09T14:22:31"},{"id":"1786261420-1907","song":"Bad Apple!!","score":865103,"grade":"A","pct":0.8651,"max_combo":141,"perfect":141,"early":0,"late":0,"miss":20,"at":"2026-08-09T14:29:12"},{"id":"1786261890-3355","song":"Bad Apple!!","score":709677,"grade":"B","pct":0.70967,"max_combo":116,"perfect":116,"early":0,"late":0,"miss":40,"at":"2026-08-09T14:36:45"}];
-window.__scoresAt = 1786261890;

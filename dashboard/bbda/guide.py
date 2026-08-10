@@ -1,6 +1,6 @@
 """The calibration and axis-alignment guide, shown in-app.
 
-Kept as one string so the in-app dialog and docs/CALIBRATION.md cannot drift
+Kept as one string so the in-app dialog and PROJECT.md cannot drift
 apart -- the doc is generated from this.
 """
 

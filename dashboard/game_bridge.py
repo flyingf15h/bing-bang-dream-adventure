@@ -624,7 +624,7 @@ def _serve(bridges: list[GameBridge], args) -> None:
                       "dashboard sends `mode pretty` when it disconnects.")
                 print("       * over WiFi the board streams to whoever spoke "
                       "to it last; the dashboard may have taken it over.")
-                print("       See docs/GAME_INPUT.md for the rest.")
+                print("       See PROJECT.md for the rest.")
 
 
 if __name__ == "__main__":

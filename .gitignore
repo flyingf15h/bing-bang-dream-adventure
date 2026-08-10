@@ -1,29 +1,36 @@
-.godot/
-/android/
-
+# --- Godot ---
+game/.godot/
+game/android/
 *.tmp
 
-*.m4a
-*.mp4
-
-/build/
+# Exported builds
+build/
 *.exe
 *.pck
 *.zip
 
-.DS_Store
-Thumbs.db__pycache__/
+# --- Python ---
+__pycache__/
 *.py[cod]
 .venv/
 venv/
 
-# Arduino build artifacts
-build/
+# --- Arduino ---
+firmware/**/build/
 *.elf
 *.bin.map
-
-# Saved calibrations
-*_calibration.json
-
-# Stray toolchain binary that landed in the sketch folder
 arduino-cli.exe
+
+# --- Generated at runtime ---
+# Saved calibrations, and the score file the game writes for the leaderboard.
+*_calibration.json
+leaderboard/scores.json
+leaderboard/scores.js
+
+# --- OS ---
+.DS_Store
+Thumbs.db
+
+# Files staged for deletion; see _unused/README.md
+_unused/
+</content>
