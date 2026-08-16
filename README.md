@@ -1,8 +1,8 @@
 # bing bang dream adventure !
 
-a rhythm game you play by flicking a circuit board around!!
+A Bad Apple!! rhythm game synced to custom IMU-based flick controllers (6-direction input). Flick the notes with the correct time and direction to see the happiest ending for the girls :)   
 
-inspired by project sekai and beatsaber, uses my custom devboard for the imu-equipped controllers: https://github.com/darshg321/ultisense 
+Inspired by project sekai and beatsaber, uses a custom devboard for the IMU-equipped controllers: https://github.com/darshg321/ultisense 
 
 
 ### Gameplay
