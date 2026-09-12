@@ -84,8 +84,6 @@ from collections import deque
 from dataclasses import dataclass
 from typing import Optional
 
-from PySide6.QtCore import Qt
-
 import numpy as np
 
 from .link import Link, SerialLink, UdpLink
@@ -268,12 +266,10 @@ class BridgeConfig:
 class GameBridge:
     """Runs a :class:`FlickDetector` over a link and posts what it finds.
 
-    The link's records arrive on its reader thread. They are handled there
-    directly, with ``Qt.DirectConnection``, which is what lets this run without
-    a Qt event loop: the default queued connection would post the signal to an
-    event loop that a headless bridge does not have, and every sample would sit
-    in the queue for ever. Detection is a few microseconds of numpy per sample,
-    so doing it on the reader thread costs nothing worth reclaiming.
+    The link's records arrive on its reader thread and are handled there
+    directly -- see :mod:`signals`, whose emission is synchronous by design.
+    Detection is a few microseconds of numpy per sample, so doing it on the
+    reader thread costs nothing worth reclaiming.
     """
 
     def __init__(self, config: BridgeConfig | None = None) -> None:
@@ -747,9 +743,9 @@ class GameBridge:
     def attach(self, link: Link) -> None:
         """Take records from ``link`` from now on."""
         self._link = link
-        link.sample.connect(self._on_sample, Qt.ConnectionType.DirectConnection)
-        link.status.connect(self._on_status, Qt.ConnectionType.DirectConnection)
-        link.info.connect(self._on_info, Qt.ConnectionType.DirectConnection)
+        link.sample.connect(self._on_sample)
+        link.status.connect(self._on_status)
+        link.info.connect(self._on_info)
 
     def open(self, link: Link, target: str) -> bool:
         """Attach, connect, and put the board into the mode this needs.
@@ -1394,6 +1390,6 @@ def make_link(port: str | None = None, host: str | None = None,
     if not target:
         raise RuntimeError(
             "No serial port found. Plug the board in, or pass --host to use "
-            "WiFi. `python game_bridge.py --list` shows every port seen."
+            "WiFi. `python run_bridge.py --list` shows every port seen."
         )
     return SerialLink(baud=baud), target

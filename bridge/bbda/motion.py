@@ -829,6 +829,74 @@ def levelled_frame(front: np.ndarray, up_world: np.ndarray,
     return FlickFrame(front=front, up=up / length)
 
 
+def wrap180(degrees: float) -> float:
+    """An angle difference folded into -180..180."""
+    return (degrees + 180.0) % 360.0 - 180.0
+
+
+def fit_offset(pairs: list[tuple[float, float]]) -> tuple[float, bool, float]:
+    """The single rotation, with or without a mirror, that best explains it.
+
+    Returns (offset degrees, mirrored, residual rms degrees). The mirror is
+    tried because getting a board's handedness backwards is a real and common
+    mounting mistake, and it looks exactly like scatter until it is named --
+    every flick lands somewhere plausible and none of them agree.
+
+    The offset is fitted as a circular mean rather than an arithmetic one, or
+    a set of errors straddling 0 and 360 would average to 180.
+    """
+    best = (0.0, False, float("inf"))
+    for mirrored in (False, True):
+        errors = [wrap180((-aimed if mirrored else aimed) - got)
+                  for aimed, got in pairs]
+        offset = math.degrees(math.atan2(
+            sum(math.sin(math.radians(e)) for e in errors),
+            sum(math.cos(math.radians(e)) for e in errors)))
+        residuals = [wrap180(e - offset) for e in errors]
+        rms = math.sqrt(sum(r * r for r in residuals) / max(1, len(residuals)))
+        if rms < best[2]:
+            best = (offset, mirrored, rms)
+    return best
+
+
+def bearing_for_front(flick, front: str) -> float | None:
+    """Re-read a captured flick as though this axis were the board's front.
+
+    Possible only because the flick carries both the whole stroke as one
+    rotation and the vertical at the moment it started: with those two, the
+    bearing for any candidate front is a calculation rather than another
+    handful of flicks. A run of thrown flicks therefore answers "which axis is
+    the front" as a by-product of answering "how accurate is it", instead of
+    needing a separate run per candidate axis.
+    """
+    turn = getattr(flick, "rotation_vector", None)
+    if turn is None or float(np.linalg.norm(turn)) < 1e-9:
+        return None
+    base = flick_frame(front)
+    up = getattr(flick, "up_at_onset", None)
+    frame = base if up is None else levelled_frame(
+        base.front, np.asarray(up, dtype=float), base.up)
+    # A movement that barely swung this candidate's front has no direction to
+    # report against it -- the bearing of a near-zero vector is noise, and one
+    # of those will occasionally post a very low error by luck.
+    if frame.swing_fraction(turn) < 0.35:
+        return None
+    return float(frame.bearing_deg(turn))
+
+
+def score_front(pairs: list[tuple[float, object]], front: str):
+    """How well one candidate front explains a whole run: (rms, offset, flip, n)."""
+    measured = []
+    for lane, flick in pairs:
+        bearing = bearing_for_front(flick, front)
+        if bearing is not None:
+            measured.append((lane, bearing))
+    if len(measured) < 4:
+        return (float("inf"), 0.0, False, len(measured))
+    offset, flip, rms = fit_offset(measured)
+    return (rms, offset, flip, len(measured))
+
+
 # ----------------------------------------------------------------------
 # Which way is up, from the board's point of view
 # ----------------------------------------------------------------------

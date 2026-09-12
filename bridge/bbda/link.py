@@ -7,8 +7,8 @@ two transports below only have to move bytes and say when they failed:
 * :class:`SerialLink` -- USB CDC, the way the board arrives out of the box.
 * :class:`UdpLink` -- WiFi, once the board has been given credentials.
 
-Both own a reader thread; parsed records reach the GUI thread through Qt
-signals, which are queued across the thread boundary automatically.
+Both own a reader thread; parsed records reach whoever is listening through
+the plain :mod:`signals` shim, called directly on that thread.
 
 Choosing between them
 ---------------------
@@ -35,7 +35,8 @@ from typing import Optional
 import numpy as np
 import serial
 from serial.tools import list_ports
-from PySide6.QtCore import QObject, Signal
+
+from .signals import Emitter, Signal
 
 DEFAULT_UDP_PORT = 3333
 
@@ -84,7 +85,7 @@ def available_ports() -> list[tuple[str, str]]:
 # ----------------------------------------------------------------------
 # Shared protocol handling
 # ----------------------------------------------------------------------
-class Link(QObject):
+class Link(Emitter):
     """Protocol parsing and the signals every transport emits.
 
     Subclasses implement :meth:`connect`, :meth:`disconnect` and

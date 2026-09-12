@@ -1,16 +1,16 @@
 """Feeds the Godot game IMU flicks, over USB serial or over WiFi.
 
-    python game_bridge.py                       # find the board on USB
-    python game_bridge.py --port COM7           # a particular serial port
-    python game_bridge.py --host 192.168.1.50   # over WiFi instead
-    python game_bridge.py --list                # what serial ports exist
-    python game_bridge.py --demo                # no board: fake flicks
+    python run_bridge.py                       # find the board on USB
+    python run_bridge.py --port COM7           # a particular serial port
+    python run_bridge.py --host 192.168.1.50   # over WiFi instead
+    python run_bridge.py --list                # what serial ports exist
+    python run_bridge.py --demo                # no board: fake flicks
 
 Two boards, one per note colour:
 
-    python game_bridge.py --board left=COM7 --board right=COM9
-    python game_bridge.py --board blue=COM7:+Y --board pink=COM9:-X
-    python game_bridge.py --two-boards          # find both, left is the first
+    python run_bridge.py --board left=COM7 --board right=COM9
+    python run_bridge.py --board blue=COM7:+Y --board pink=COM9:-X
+    python run_bridge.py --two-boards          # find both, left is the first
 
 The blue notes are the left hand and the pink ones are the right, which is what
 the charts already call them. A board given a hand may only hit notes of that
@@ -26,7 +26,7 @@ Leave it running alongside the game. It prints a line per flick with -v, which
 is the quickest way to tell whether a flick that did not register was missed by
 the detector or lost between here and the game.
 
-See dashboard/bbda/gamebridge.py for the wire format and the reasoning.
+See bridge/bbda/service.py for the wire format and the reasoning.
 """
 
 from __future__ import annotations
@@ -37,7 +37,7 @@ import sys
 import threading
 import time
 
-from bbda.gamebridge import (
+from bbda.service import (
     DEFAULT_GAME_PORT,
     BridgeConfig,
     GameBridge,

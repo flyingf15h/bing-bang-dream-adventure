@@ -24,14 +24,14 @@ Inspired by project sekai and beatsaber, uses a custom devboard for the IMU-equi
 
 ```
 firmware/     the Arduino sketch that runs on the board
-dashboard/    Python: the sensor dashboard, and the bridge that feeds the game
+bridge/       Python: the headless service that feeds the board's IMU into the game
 game/         the Godot 4.7 project
 leaderboard/  a static page that reads the score file the game writes
 ```
 
 The game never talks to the board directly, because Godot has no way to open a
-serial port. `dashboard/game_bridge.py` reads the board over USB or WiFi, decides what counts as a flick, and posts each one to the game
-over localhost.
+serial port. `bridge/run_bridge.py` reads the board over USB or WiFi, decides
+what counts as a flick, and posts each one to the game over localhost.
 
 ## Running it
 
@@ -46,24 +46,15 @@ arduino-cli upload  --fqbn "esp32:esp32:esp32s3:CDCOnBoot=cdc" -p COM14 firmware
 Then leave the bridge running next to the game:
 
 ```bash
-cd dashboard
+cd bridge
 pip install -r requirements.txt
-python game_bridge.py                       # finds the board on USB
-python game_bridge.py --host 192.168.1.50   # or over WiFi
-python game_bridge.py --demo                # no board at all, fake flicks
+python run_bridge.py                       # finds the board(s) on USB
+python run_bridge.py --host 192.168.1.50   # or over WiFi
+python run_bridge.py --demo                # no board at all, fake flicks
 ```
 
-### The dashboard
-
-```bash
-cd dashboard
-python main.py                 # or --port COM14, or --host 192.168.1.50
-```
-
-There's
-an easy mode on the Calibrate tab that walks you through it in about four
-minutes: put the board down, rest it on each of its six sides, wave it around,
-shove it across the table once. After that the axes are named and everything
-else works properly.
+Calibration is being moved into the bridge as a headless service, driven from
+inside the game rather than from a separate desktop dashboard -- see
+`PLAN.md` for where that stands.
 
 </content>
