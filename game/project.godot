@@ -15,11 +15,17 @@ run/main_scene="res://scenes/Start.tscn"
 config/features=PackedStringArray("4.7", "Forward Plus")
 config/icon="res://icon.svg"
 
+[audio]
+
+buses/default_bus_layout="res://default_bus_layout.tres"
+
 [autoload]
 
+BridgeLauncher="*res://autoload/BridgeLauncher.gd"
 TapInputBus="*res://autoload/TapInputBus.gd"
 ImuInput="*res://autoload/ImuInput.gd"
-ImuSettings="*res://autoload/ImuSettings.gd"
+Settings="*res://autoload/Settings.gd"
+SettingsOverlay="*res://scenes/SettingsOverlay.tscn"
 
 [display]
 

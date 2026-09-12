@@ -11,9 +11,9 @@ extends Control
 ##   Godot editor:  open ImuTest.tscn and press F6
 ##   Command line:  godot --path . res://scenes/ImuTest.tscn
 ##
-## With no board:  python dashboard/game_bridge.py --demo
-## With a board:   python dashboard/game_bridge.py            (USB)
-##                 python dashboard/game_bridge.py --host <ip>  (WiFi)
+## With no board:  python bridge/run_bridge.py --demo
+## With a board:   python bridge/run_bridge.py            (USB)
+##                 python bridge/run_bridge.py --host <ip>  (WiFi)
 
 const TapEvent = preload("res://autoload/TapInputBus.gd").TapEvent
 
@@ -34,7 +34,7 @@ func _ready() -> void:
 		_flash[sector] = 0.0
 	TapInputBus.tap.connect(_on_tap)
 	ImuInput.link_changed.connect(_on_link_changed)
-	_note("waiting -- start dashboard/game_bridge.py")
+	_note("waiting -- start bridge/run_bridge.py")
 	set_process(true)
 
 

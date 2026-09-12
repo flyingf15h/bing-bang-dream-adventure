@@ -25,7 +25,8 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from bbda.gamebridge import WIRE_VERSION, BridgeConfig, GameBridge
+from bbda.protocol import WIRE_VERSION
+from bbda.service import BridgeConfig, GameBridge
 from bbda.link import Sample
 
 fail = 0
@@ -777,7 +778,7 @@ check("hello is one datagram and names the transport",
 # telling them apart. If it is ever missing, or ever wrong, every flick from one
 # board scores against the other colour -- which looks like the boards being
 # swapped and is nothing of the kind.
-from bbda.gamebridge import HAND_ALIASES, normalise_hand   # noqa: E402
+from bbda.service import HAND_ALIASES, normalise_hand   # noqa: E402
 
 check("blue is the left hand and pink is the right",
       normalise_hand("blue") == "left" and normalise_hand("pink") == "right")
@@ -830,7 +831,7 @@ check("two boards are given different control ports",
       "checked properly by parse_board below")
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from game_bridge import parse_board   # noqa: E402
+from run_bridge import parse_board   # noqa: E402
 
 check("--board left=COM7 names a hand and a target",
       parse_board("left=COM7") == ("left", "COM7", None))
@@ -861,7 +862,8 @@ check("a --board without a hand is refused", malformed)
 # is also the most common thing to have set wrong. So one run of flicks has to
 # be able to say which axis was right, or the tool reports eighty degrees of
 # scatter and leaves somebody to guess between six options.
-from flick_check import AXIS_CHOICES, score_front   # noqa: E402
+from bbda.motion import FLICK_FRONT_CHOICES as AXIS_CHOICES  # noqa: E402
+from bbda.motion import score_front                          # noqa: E402
 from bbda.motion import FlickDetector as _FD        # noqa: E402
 from bbda.motion import flick_bearing_map as _map   # noqa: E402
 from bbda.motion import flick_frame as _frame       # noqa: E402

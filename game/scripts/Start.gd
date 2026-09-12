@@ -40,9 +40,6 @@ func _ready() -> void:
 	# means reaching for the mouse first.
 	TapInputBus.tap.connect(_on_tap)
 	_build_imu_label()
-	# Also here, not only in game: setting the front axis and the thresholds is
-	# something you do before playing, and doing it here costs no notes.
-	add_child(preload("res://scripts/ImuDebugPanel.gd").new())
 
 	_play_intro()
 
@@ -79,7 +76,7 @@ func _refresh_imu_label() -> void:
 	if not ImuInput.enabled:
 		_imu_label.text = ""
 	elif not ImuInput.link_up:
-		_imu_label.text = "no IMU bridge — run  python dashboard/game_bridge.py"
+		_imu_label.text = "no IMU bridge — run  python bridge/run_bridge.py"
 		_imu_label.modulate = Color(1.0, 0.92, 0.92, 0.85)
 	elif not ImuInput.board_connected:
 		_imu_label.text = "bridge running, no board — " + ImuInput.status_text

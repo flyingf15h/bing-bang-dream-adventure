@@ -1,7 +1,8 @@
 extends Node
-## Stores the IMU tuning, and is the one place that sends it to the bridge.
+## Every setting the game has: IMU tuning, audio, gameplay assist -- and the
+## one place that sends the IMU half of it to the bridge.
 ##
-## Two kinds of setting live here and they behave differently, which is worth
+## Kinds of setting live here and they behave differently, which is worth
 ## being clear about because the difference is the whole design:
 ##
 ##   * **Detection** settings -- the front axis, the thresholds, the swing and
@@ -15,15 +16,21 @@ extends Node
 ##   * **Display** settings -- the arrow, and whether anything but a scoring
 ##     hit gets colour -- are the game's own and take effect immediately.
 ##
-##   * **Assist** settings -- how far off a flick may be aimed, and how much
-##     the timing windows stretch for one -- are also the game's own, because
-##     they are about scoring rather than detection. The bridge decides whether
-##     a movement was a flick and which way it went; only the game knows
-##     whether there was a note there to hit.
+##   * **Assist** settings -- how far off a flick may be aimed, how much the
+##     timing windows stretch for one, and the audio offset -- are also the
+##     game's own, because they are about scoring and feel rather than
+##     detection. The bridge decides whether a movement was a flick and which
+##     way it went; only the game knows whether there was a note there to hit,
+##     or how far the chart's audio lags the speakers it is playing through.
+##
+##   * **Audio** settings -- the three volume sliders -- act on the audio
+##     buses directly (see Step 8); nothing here is sent anywhere.
 ##
 ## Everything is saved to user:// on change, so a board tuned once stays tuned
 ## across runs, and can be exported to a file to move to another machine or to
-## keep alongside a particular board.
+## keep alongside a particular board. A fresh install with no saved file yet
+## imports game/profiles/default.json -- the known-good tuning, committed --
+## so day one plays the same as day one hundred.
 
 ## Emitted when any value changes, from any source: an edit here, a file that
 ## was imported, or the bridge reporting what it is running.
@@ -37,6 +44,16 @@ signal front_suggested(record: Dictionary)
 signal rest_measured(record: Dictionary)
 signal bias_written(record: Dictionary)
 
+## Emitted for a running calibration sequence (bbda/calseq.py), carrying the
+## bridge's cal_state/cal_done record verbatim -- CalibrationWizard is a thin
+## renderer over these, not a second place step logic could live.
+signal cal_state_received(record: Dictionary)
+signal cal_done_received(record: Dictionary)
+
+## Emitted with the reply to scan(): {"ports": [{"device", "description",
+## "looks_like_board"}, ...]}.
+signal scan_received(record: Dictionary)
+
 const SAVE_PATH := "user://imu_settings.cfg"
 
 ## Bumped if the meaning of a stored value ever changes. An older file is read
@@ -49,14 +66,15 @@ const SAVE_PATH := "user://imu_settings.cfg"
 ## which lane a flick meant. A file written before that carries floors chosen
 ## against the old, stricter rules.
 ## 3: the leniency values were widened again. See `_migrate()`.
-const FORMAT_VERSION := 4
-
-## The detection floors, and what version first wrote each one's current
-## meaning. A stored value older than this is dropped rather than kept, because
-## it was chosen to compensate for behaviour that no longer exists.
-const FLOOR_KEYS: PackedStringArray = [
-	"on_threshold_dps", "min_swing", "min_margin",
-]
+## 4: the direction check moved from board axes to gravity; a stored aim
+## correction from before that is measuring a mistake that no longer exists.
+## 5: this autoload absorbed audio and gameplay settings that used to live
+## elsewhere or nowhere (`audio_offset_ms`, `vol_master/music/sfx`), and the
+## v1-era dashboard this file's format used to track no longer exists at all.
+## Nothing before this version is migrated field by field any more -- see
+## `_migrate()` -- because there is no longer a meaningful "what this file
+## used to mean" to carry forward across that rewrite.
+const FORMAT_VERSION := 5
 
 const FRONT_CHOICES: PackedStringArray = ["+X", "-X", "+Y", "-Y", "+Z", "-Z"]
 
@@ -145,6 +163,26 @@ var lane_tolerance_deg: float = 75.0
 ## removes. Stretching the windows for flicks and not for keys is what keeps
 ## that from reading as bad play.
 var timing_scale: float = 2.8
+
+## Milliseconds to shift the chart's audio against the notes, positive meaning
+## the audio is delayed. Every audio pipeline from the sound card to whatever
+## the player is listening on adds some lag that the video/note timing does
+## not share, and this is what cancels it out -- there is no way to measure it
+## from in here, so it is a player-set offset, not a detected one. Previously
+## a Gameplay.gd-only @export with nowhere to persist between runs; living
+## here means it survives a restart like every other tuning value.
+var audio_offset_ms: float = -50.0
+
+
+## --- audio, acted on directly through the audio buses -----------------------
+##
+## Linear 0..1, applied as set_bus_volume_db(linear_to_db(v)) with the bus
+## muted outright at 0 -- see Step 8 -- because linear_to_db(0.0) is -inf and
+## some audio drivers handle that worse than an explicit mute.
+var vol_master: float = 1.0
+var vol_music: float = 1.0
+var vol_sfx: float = 1.0
+
 ## Whether the debug panel is open. Stored, because someone tuning a board
 ## across several runs should not have to reopen it every time.
 var panel_open: bool = false
@@ -156,7 +194,7 @@ var applied: Dictionary = {}
 ## Which tuning values the player has deliberately changed, as a set of keys.
 ##
 ## This is what decides who wins when the two disagree at connect time. A
-## bridge started as `game_bridge.py --front +Y` is making a statement, and so
+## bridge started as `run_bridge.py --front +Y` is making a statement, and so
 ## is somebody who set the front axis in the panel last week; the difference is
 ## that only the second one is recorded here. Untouched settings are left to
 ## the bridge, so its flags mean what they say -- and touched ones are re-sent,
@@ -170,6 +208,8 @@ var _loaded: bool = false
 
 func _ready() -> void:
 	load_settings()
+	changed.connect(_apply_audio_buses)
+	_apply_audio_buses()
 	# The bridge may already be running, or may start later; either way the
 	# first thing to do on hearing from it is to send it what is stored here,
 	# so a saved tuning survives a bridge restart without anybody re-entering
@@ -177,6 +217,27 @@ func _ready() -> void:
 	ImuInput.link_changed.connect(func(up: bool) -> void:
 		if up:
 			push_edited_to_bridge())
+
+
+## Pushed straight to the audio buses rather than read by whoever plays a
+## sound -- volume is the one setting here with an engine-level home to live
+## in, and going through it means a change takes effect immediately for
+## audio already playing, not just for the next stream that starts.
+func _apply_audio_buses() -> void:
+	_apply_bus_volume("Master", vol_master)
+	_apply_bus_volume("Music", vol_music)
+	_apply_bus_volume("SFX", vol_sfx)
+
+
+func _apply_bus_volume(bus_name: String, linear: float) -> void:
+	var idx := AudioServer.get_bus_index(bus_name)
+	if idx < 0:
+		return
+	AudioServer.set_bus_volume_db(idx, linear_to_db(linear))
+	# linear_to_db(0.0) is -inf, and some audio drivers handle that worse than
+	# an explicit mute -- so zero is muted outright rather than trusted to a
+	# volume low enough that it should not matter.
+	AudioServer.set_bus_mute(idx, linear <= 0.001)
 
 
 ## --- what the bridge is told ----------------------------------------------
@@ -201,6 +262,16 @@ func assist() -> Dictionary:
 	return {
 		"lane_tolerance_deg": lane_tolerance_deg,
 		"timing_scale": timing_scale,
+		"audio_offset_ms": audio_offset_ms,
+	}
+
+
+## Volume for the three buses. Not sent anywhere -- see `set_audio()`.
+func audio() -> Dictionary:
+	return {
+		"vol_master": vol_master,
+		"vol_music": vol_music,
+		"vol_sfx": vol_sfx,
 	}
 
 
@@ -250,6 +321,20 @@ func clear_aim(hand: String = "") -> void:
 	set_aim(0.0, false, hand)
 
 
+## The last WiFi address each board connected on, keyed by hand ("" for a
+## single untagged board). Purely a convenience for the Controllers tab's
+## WiFi field -- nothing here acts on it, and nothing auto-reconnects from
+## it; it only saves retyping an address that was typed in once already.
+var wifi_hosts: Dictionary = {}
+
+
+func remember_wifi_host(hand: String, host: String) -> void:
+	if host == "" or wifi_hosts.get(hand, "") == host:
+		return
+	wifi_hosts[hand] = host
+	save_settings()
+
+
 ## True when a correction is in force, so a display can say so rather than
 ## leaving somebody to wonder why the raw bearing and the lane disagree.
 func aim_corrected(hand: String = "") -> bool:
@@ -270,10 +355,28 @@ func set_assist(key: String, value: float) -> void:
 	changed.emit()
 
 
+## The audio counterpart of `set_assist()`: acts immediately, since a volume
+## slider has no bridge to disagree with either.
+func set_audio(key: String, value: float) -> void:
+	if not audio().has(key):
+		push_warning("[imu] set_audio called with unknown key " + key)
+		return
+	set(key, clampf(value, 0.0, 1.0))
+	save_settings()
+	changed.emit()
+
+
 func _read_assist(values: Dictionary) -> void:
 	lane_tolerance_deg = float(values.get("lane_tolerance_deg", lane_tolerance_deg))
 	timing_scale = float(values.get("timing_scale", timing_scale))
+	audio_offset_ms = float(values.get("audio_offset_ms", audio_offset_ms))
 	_clamp_assist()
+
+
+func _read_audio(values: Dictionary) -> void:
+	vol_master = clampf(float(values.get("vol_master", vol_master)), 0.0, 1.0)
+	vol_music = clampf(float(values.get("vol_music", vol_music)), 0.0, 1.0)
+	vol_sfx = clampf(float(values.get("vol_sfx", vol_sfx)), 0.0, 1.0)
 
 
 ## Kept inside the range the sliders offer, wherever a value came from. A file
@@ -282,13 +385,14 @@ func _read_assist(values: Dictionary) -> void:
 func _clamp_assist() -> void:
 	lane_tolerance_deg = clampf(lane_tolerance_deg, 30.0, 100.0)
 	timing_scale = clampf(timing_scale, 1.0, 4.0)
+	audio_offset_ms = clampf(audio_offset_ms, -300.0, 300.0)
 
 
 func push_to_bridge() -> void:
 	## Send every detection setting. Fire and forget: the reply is what counts,
 	## and it arrives on the normal datagram path as a `config` record.
 	var message := tuning()
-	message["cmd"] = "set"
+	message["cmd"] = Wire.CMD_SET
 	_send(message)
 
 
@@ -301,7 +405,7 @@ func push_edited_to_bridge() -> void:
 	if edited.is_empty():
 		request_config()
 		return
-	var message := {"cmd": "set"}
+	var message := {"cmd": Wire.CMD_SET}
 	var all := tuning()
 	for key in edited:
 		if all.has(key):
@@ -322,22 +426,44 @@ func set_tuning(key: String, value: Variant) -> void:
 
 
 func request_config() -> void:
-	_send({"cmd": "get"})
+	_send({"cmd": Wire.CMD_GET})
 
 
-## Ask the bridge to watch the next flick and say which front axis would put it
-## where the player says they aimed. `expect_bearing` is degrees clockwise from
-## up, the convention a person naming a direction uses: 0 up, 90 right.
-func learn_front(expect_bearing: float) -> void:
-	_send({"cmd": "learn_front", "expect_bearing": expect_bearing})
+## Ask one board to watch the next flick and say which front axis would put
+## it where the player says they aimed. `expect_bearing` is degrees clockwise
+## from up, the convention a person naming a direction uses: 0 up, 90 right.
+##
+## Per-hand, like every command below it here: the front axis is a fact
+## about one board's mounting, and arming both at once means whichever board
+## gets flicked next answers for both of them.
+func learn_front(expect_bearing: float, hand: String = "") -> void:
+	send_to_hand(hand, {"cmd": Wire.CMD_LEARN_FRONT, "expect_bearing": expect_bearing})
 
 
-func measure_rest(seconds: float = 2.0) -> void:
-	_send({"cmd": "measure_rest", "seconds": seconds})
+func measure_rest(seconds: float = 2.0, hand: String = "") -> void:
+	send_to_hand(hand, {"cmd": Wire.CMD_MEASURE_REST, "seconds": seconds})
 
 
-func write_bias() -> void:
-	_send({"cmd": "write_bias"})
+func write_bias(hand: String = "") -> void:
+	send_to_hand(hand, {"cmd": Wire.CMD_WRITE_BIAS})
+
+
+## --- calibration sequence (bbda/calseq.py) ----------------------------------
+
+func cal_start(hand: String, kind: String = "full") -> void:
+	send_to_hand(hand, {"cmd": Wire.CMD_CAL_START, "kind": kind})
+
+
+func cal_advance(hand: String) -> void:
+	send_to_hand(hand, {"cmd": Wire.CMD_CAL_ADVANCE})
+
+
+func cal_cancel(hand: String) -> void:
+	send_to_hand(hand, {"cmd": Wire.CMD_CAL_CANCEL})
+
+
+func cal_save(hand: String) -> void:
+	send_to_hand(hand, {"cmd": Wire.CMD_CAL_SAVE})
 
 
 func _send(message: Dictionary) -> void:
@@ -350,18 +476,52 @@ func _send(message: Dictionary) -> void:
 	## started with, and the panel would be showing one board's settings while
 	## half the flicks on screen came from the other.
 	##
-	## The board-specific setting, the front axis, is the exception and is
-	## handled in `push_front_to`: it is a fact about how one board is mounted,
-	## and sending it to both is how the second board ends up being told the
-	## first one's mounting.
-	var payload := JSON.stringify(message).to_utf8_buffer()
+	## Anything that is a fact about *one* board rather than about detection in
+	## general -- the front axis, switching its transport, running its
+	## calibration -- goes through `send_to_hand()` instead.
 	for port in control_ports():
-		if port != _connected_port:
-			_socket.close()
-			if _socket.connect_to_host("127.0.0.1", port) != OK:
-				continue
-			_connected_port = port
-		_socket.put_packet(payload)
+		_send_to_port(port, message)
+
+
+## Send to one board's control port only. Sending a transport switch or a
+## calibration command to every bridge would be telling the second board to
+## do what the first one was just asked to.
+func send_to_hand(hand: String, message: Dictionary) -> void:
+	_send_to_port(int(_hand_ports.get(hand, control_port())), message)
+
+
+func _send_to_port(port: int, message: Dictionary) -> void:
+	if port != _connected_port:
+		_socket.close()
+		if _socket.connect_to_host("127.0.0.1", port) != OK:
+			return
+		_connected_port = port
+	_socket.put_packet(JSON.stringify(message).to_utf8_buffer())
+
+
+## Ask one board to reopen on a different transport, live -- the Controllers
+## tab's USB/WiFi toggle. Leave both `host` and `port` empty to go back to
+## USB with the bridge auto-finding it; set `host` (with `udp_port` if not
+## the board's default) to move to WiFi; set `port` to pin USB to a specific
+## serial port rather than trusting auto-detection -- what `scan()`'s
+## results are for, when auto-detect found the wrong board or none.
+func switch_transport(hand: String, host: String = "", udp_port: int = 3333,
+		port: String = "") -> void:
+	var message := {"cmd": Wire.CMD_TRANSPORT}
+	if host != "":
+		message["host"] = host
+		message["udp_port"] = udp_port
+	elif port != "":
+		message["port"] = port
+	send_to_hand(hand, message)
+
+
+## Ask a bridge to list every serial port it can see, tagged with which look
+## like a board. Any bridge answers identically -- the port list is a fact
+## about the machine, not about which board asked -- so this reaches
+## whichever one is easiest, not a particular hand.
+func scan() -> void:
+	_send({"cmd": Wire.CMD_SCAN})
 
 
 ## Every bridge control port the game has heard from, lowest first.
@@ -388,6 +548,10 @@ func control_port() -> int:
 ## Control ports seen in `config` records, as a set. One entry per board.
 var _control_ports: Dictionary = {}
 
+## Control port for each hand that has announced itself, keyed by hand
+## ("" for a single untagged board). What `send_to_hand()` reaches for.
+var _hand_ports: Dictionary = {}
+
 
 func note_bridge_config(record: Dictionary) -> void:
 	## Take what the bridge says it is running as the truth.
@@ -399,7 +563,9 @@ func note_bridge_config(record: Dictionary) -> void:
 	## to remove.
 	applied = record.duplicate()
 	if record.has("control_port"):
-		_control_ports[int(record["control_port"])] = true
+		var port := int(record["control_port"])
+		_control_ports[port] = true
+		_hand_ports[String(record.get("hand", ""))] = port
 	# The front axis is a property of one board's mounting, so with two boards
 	# it must not be adopted from whichever of them spoke last -- that would
 	# hand the second board's mounting to the first every time it reconnected.
@@ -431,76 +597,41 @@ func load_settings() -> void:
 	var file := ConfigFile.new()
 	if file.load(SAVE_PATH) != OK:
 		_loaded = true
+		# A fresh install has nothing to migrate and nothing to guess at --
+		# import the known-good tuning committed alongside the game, the same
+		# way a player's own exported file would be imported.
+		var error := import_from("res://profiles/default.json")
+		if error != "":
+			push_warning("[imu] could not load the default profile: " + error)
 		return
 	_read_from(file)
-	_migrate(int(file.get_value("imu", "format", 1)))
+	# Before _migrate(), not after: it may call import_from(), which calls
+	# save_settings(), which refuses to write anything while this is false --
+	# a reset that never reaches disk would just repeat itself, silently,
+	# every single launch.
 	_loaded = true
+	_migrate(int(file.get_value("imu", "format", 1)))
 	changed.emit()
 
 
 func _migrate(stored_format: int) -> void:
-	## Put the detection floors and the leniency back to the current defaults,
-	## once, for a file written before they were re-tuned.
-	##
-	## Normally a stored value wins over a default, and it should: it is a
-	## choice somebody made. These are the exception, for two different reasons.
-	##
-	## The floors were chosen against a detector that refused far more than this
-	## one does -- a threshold raised to stop phantom flicks, a margin raised to
-	## stop flicks landing in the wrong lane -- and both of those reasons have
-	## since been dealt with elsewhere, by the game resolving aim itself. A
-	## threshold of 500 dps saved to work around the old behaviour is a hard
-	## flick and nothing else, and keeping it would mean the retune reached
-	## everybody except the people who had already tried to fix this by hand.
-	##
-	## The leniency values were never chosen at all: they are one build old, and
-	## whatever is in the file was written automatically from the defaults of
-	## the build that introduced them. Nothing in the file distinguishes that
-	## from a deliberate setting, so they go back too.
-	##
-	## Nothing else is touched -- front axis, refractory, calibration and the
-	## display settings all survive, because none of them changed meaning.
+	## This is a breaking release: the wire format, the detector's tuning
+	## surface and this file's own schema (Settings absorbing audio and
+	## gameplay settings that used to live elsewhere or nowhere) all changed
+	## underneath it at once, so there is no longer a meaningful field-by-field
+	## story for "what an old value used to mean". A file from before
+	## FORMAT_VERSION is reset to the current defaults outright, the same
+	## defaults `res://profiles/default.json` carries, rather than picked apart
+	## version by version -- and said so, so this does not look like settings
+	## quietly vanishing.
 	if stored_format >= FORMAT_VERSION:
 		return
-	var said: PackedStringArray = []
-	if stored_format < 2:
-		for key in FLOOR_KEYS:
-			edited.erase(key)
-		on_threshold_dps = 110.0
-		min_swing = 0.2
-		min_margin = 0.0
-		said.append("detection floors")
-	if stored_format < 3:
-		lane_tolerance_deg = 75.0
-		timing_scale = 2.8
-		said.append("leniency")
-	if stored_format < 4:
-		## The direction check solves for one rotation, and possibly a mirror,
-		## that best explains where four thrown flicks landed. That fit is only
-		## as meaningful as the thing it was fitted against -- and what it was
-		## fitted against has changed underneath it.
-		##
-		## Directions used to be measured in the board's own axes, so a board
-		## held even slightly crooked reported every flick rotated by the angle
-		## of the grip. The check dutifully measured that and stored it. They are
-		## now measured against gravity, which is where the rotation went in the
-		## first place, so the stored correction is no longer cancelling anything
-		## -- it is the only thing left rotating the flicks.
-		##
-		## Kept would be worse than useless: it would look like a residual
-		## inaccuracy in the new detector, which is exactly the wrong place to go
-		## looking. Zeroed, the check can simply be run again, against a detector
-		## whose answers mean what they say.
-		bearing_offset_deg = 0.0
-		bearing_flip = false
-		hand_aim.clear()
-		edited.erase("bearing_offset_deg")
-		said.append("aim correction")
-	print("[imu] %s reset to the current defaults -- the saved values were "
-		% " and ".join(said)
-		+ "chosen against a stricter build. Everything else in the file is "
-		+ "kept, and the panel still moves all of it.")
-	save_settings()
+	var error := import_from("res://profiles/default.json")
+	print("[imu] settings file was format %d; this build is %d and does not "
+		% [stored_format, FORMAT_VERSION]
+		+ "migrate older files field by field -- reset to the current "
+		+ "defaults instead."
+		+ ("" if error == "" else " (%s)" % error))
 
 
 func save_settings() -> void:
@@ -520,6 +651,9 @@ func save_settings() -> void:
 	file.set_value("aim", "bearing_offset_deg", bearing_offset_deg)
 	file.set_value("aim", "bearing_flip", bearing_flip)
 	file.set_value("aim", "hand_aim", hand_aim)
+	for key in audio():
+		file.set_value("audio", key, audio()[key])
+	file.set_value("network", "wifi_hosts", wifi_hosts)
 	file.save(SAVE_PATH)
 
 
@@ -544,10 +678,17 @@ func _read_from(file: ConfigFile) -> void:
 	_read_assist({
 		"lane_tolerance_deg": file.get_value("assist", "lane_tolerance_deg", lane_tolerance_deg),
 		"timing_scale": file.get_value("assist", "timing_scale", timing_scale),
+		"audio_offset_ms": file.get_value("assist", "audio_offset_ms", audio_offset_ms),
 	})
 	bearing_offset_deg = fposmod(float(file.get_value("aim", "bearing_offset_deg", bearing_offset_deg)), 360.0)
 	bearing_flip = bool(file.get_value("aim", "bearing_flip", bearing_flip))
 	hand_aim = file.get_value("aim", "hand_aim", {})
+	wifi_hosts = file.get_value("network", "wifi_hosts", {})
+	_read_audio({
+		"vol_master": file.get_value("audio", "vol_master", vol_master),
+		"vol_music": file.get_value("audio", "vol_music", vol_music),
+		"vol_sfx": file.get_value("audio", "vol_sfx", vol_sfx),
+	})
 
 
 ## Where the saved file really is, for showing a human. user:// is a real
@@ -577,6 +718,7 @@ func export_to(path: String) -> String:
 			"bearing_offset_deg": bearing_offset_deg,
 			"bearing_flip": bearing_flip,
 		},
+		"audio": audio(),
 	}
 	var file := FileAccess.open(path, FileAccess.WRITE)
 	if file == null:
@@ -629,6 +771,7 @@ func import_from(path: String) -> String:
 	var aim: Dictionary = payload.get("aim", {})
 	bearing_offset_deg = fposmod(float(aim.get("bearing_offset_deg", bearing_offset_deg)), 360.0)
 	bearing_flip = bool(aim.get("bearing_flip", bearing_flip))
+	_read_audio(payload.get("audio", {}))
 
 	# Importing a file is as deliberate as moving a slider, so what it carries
 	# counts as chosen and will be re-sent to a bridge that restarts later.
@@ -663,6 +806,7 @@ func reset_to_defaults() -> void:
 	# rather than about how the board plays.
 	lane_tolerance_deg = 75.0
 	timing_scale = 2.8
+	audio_offset_ms = -50.0
 	bearing_offset_deg = 0.0
 	bearing_flip = false
 	edited.clear()

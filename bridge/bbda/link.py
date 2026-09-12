@@ -7,8 +7,8 @@ two transports below only have to move bytes and say when they failed:
 * :class:`SerialLink` -- USB CDC, the way the board arrives out of the box.
 * :class:`UdpLink` -- WiFi, once the board has been given credentials.
 
-Both own a reader thread; parsed records reach the GUI thread through Qt
-signals, which are queued across the thread boundary automatically.
+Both own a reader thread; parsed records reach whoever is listening through
+the plain :mod:`signals` shim, called directly on that thread.
 
 Choosing between them
 ---------------------
@@ -35,7 +35,8 @@ from typing import Optional
 import numpy as np
 import serial
 from serial.tools import list_ports
-from PySide6.QtCore import QObject, Signal
+
+from .signals import Emitter, Signal
 
 DEFAULT_UDP_PORT = 3333
 
@@ -84,7 +85,7 @@ def available_ports() -> list[tuple[str, str]]:
 # ----------------------------------------------------------------------
 # Shared protocol handling
 # ----------------------------------------------------------------------
-class Link(QObject):
+class Link(Emitter):
     """Protocol parsing and the signals every transport emits.
 
     Subclasses implement :meth:`connect`, :meth:`disconnect` and
@@ -475,9 +476,16 @@ class UdpLink(Link):
         try:
             sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            # Nothing is retransmitted, so a large receive buffer is what
-            # stops a busy GUI thread from costing samples.
-            sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1 << 20)
+            # 1 MB was right for a dashboard plotting every sample on a GUI
+            # thread that could fall behind; it is wrong here. Nothing is
+            # retransmitted, so a queued datagram is not "still due" -- it is
+            # stale, and at ~200 Hz a megabyte of queue is seconds of queued
+            # motion. That is not a broken link, it is flicks landing late,
+            # which looks exactly like a detector tuned wrong. 64 KB is still
+            # generous -- most of a second of samples -- while being small
+            # enough that the drain loop in :meth:`_read_loop` never has far
+            # to catch up.
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 64 * 1024)
             sock.settimeout(0.2)
             sock.bind(("", 0))
         except OSError as exc:
@@ -540,6 +548,31 @@ class UdpLink(Link):
             if self._peer and sender[0] != self._peer[0]:
                 continue      # something else on the network, not our board
             self.datagrams += 1
+
+            # Drain to the newest datagram before handing anything to the
+            # parser. A queue is only possible when this thread fell behind
+            # for a moment -- a GC pause, the OS scheduling something else --
+            # and every datagram sitting behind the newest one in that queue
+            # describes a moment that has already passed. Feeding them in
+            # order would not recover that time, it would only spend more of
+            # it parsing samples on the way to finding out where the board
+            # actually is *now*. Briefly non-blocking rather than a second
+            # `settimeout(0.0)` call: asking "is there more, right now" and
+            # switching back the instant the answer is no.
+            self._socket.setblocking(False)
+            try:
+                while True:
+                    try:
+                        newer, newer_sender = self._socket.recvfrom(4096)
+                    except (BlockingIOError, socket.timeout):
+                        break
+                    if self._peer and newer_sender[0] != self._peer[0]:
+                        continue
+                    self.datagrams += 1
+                    chunk = newer
+            finally:
+                self._socket.settimeout(0.2)
+
             # Each datagram holds whole lines, but a board that filled its
             # buffer mid-line will split one across two -- so the same
             # line-assembling buffer is used as for serial. A dropped packet

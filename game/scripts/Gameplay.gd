@@ -9,7 +9,12 @@ const TapEvent = preload("res://autoload/TapInputBus.gd").TapEvent
 
 @export var radius: float = 250.0
 @export var start_delay: float = 3.2
-@export var audio_offset_ms: float = -50.0
+
+## Mirrors Settings.audio_offset_ms, refreshed in _ready() and on
+## Settings.changed. A plain local rather than a live read from Settings at
+## each use, so the audio path below stays exactly the float arithmetic it
+## always was -- see that comment for why.
+var audio_offset_ms: float = -50.0
 
 @export var video_opacity: float = 0.30
 @export var scrim_alpha: float = 0.72
@@ -157,6 +162,7 @@ func _ready() -> void:
 	_load_beatmap()
 
 	player = AudioStreamPlayer.new()
+	player.bus = "Music"
 	add_child(player)
 	# An empty path is a chart that has no music, not a chart whose music is
 	# missing -- the practice map is exactly that. Without the distinction it
@@ -186,9 +192,11 @@ func _ready() -> void:
 	# moments someone is checking whether the board is working at all.
 	ImuInput.flick_received.connect(_on_imu_flick)
 	ImuInput.flick_refused.connect(_on_imu_refused)
-	show_imu_arrow = ImuSettings.show_arrow
-	ImuSettings.changed.connect(func() -> void: show_imu_arrow = ImuSettings.show_arrow)
-	add_child(preload("res://scripts/ImuDebugPanel.gd").new())
+	show_imu_arrow = Settings.show_arrow
+	audio_offset_ms = Settings.audio_offset_ms
+	Settings.changed.connect(func() -> void:
+		show_imu_arrow = Settings.show_arrow
+		audio_offset_ms = Settings.audio_offset_ms)
 
 
 func _on_resize() -> void:
@@ -303,13 +311,13 @@ const GRADE_RAMPS := {
 func _grade() -> Array:
 	var pct: float = clampf(score_f / SCORE_POOL, 0.0, 1.0)
 	var key: String = "FAIL"
-	if pct >= 0.98:    key = "SS+"
-	elif pct >= 0.95:  key = "SS"
-	elif pct >= 0.90:  key = "S"
-	elif pct >= 0.80:  key = "A"
-	elif pct >= 0.70:  key = "B"
-	elif pct >= 0.60:  key = "C"
-	elif pct >= 0.50:  key = "D"
+	if pct >= 0.85:    key = "SS+"
+	elif pct >= 0.70:  key = "SS"
+	elif pct >= 0.65:  key = "S"
+	elif pct >= 0.60:  key = "A"
+	elif pct >= 0.50:  key = "B"
+	elif pct >= 0.40:  key = "C"
+	elif pct >= 0.30:  key = "D"
 	var ramp: Array = GRADE_RAMPS[key]
 	return [key, ramp[0], pct, ramp[1]]
 
@@ -700,7 +708,7 @@ func _judge_for(err_ms: float, scale: float = 1.0) -> String:
 func _imu_window_scale() -> float:
 	if not (ImuInput.enabled and ImuInput.link_up):
 		return 1.0
-	return clampf(ImuSettings.timing_scale, 1.0, 4.0)
+	return clampf(Settings.timing_scale, 1.0, 4.0)
 
 
 ## How far apart two angles are, in degrees, the short way round.
@@ -818,7 +826,7 @@ func _try_hit_direction(angle_deg: float, lag_ms: float,
 	var at: float = song_time - lag_ms / 1000.0
 	var scale: float = _imu_window_scale()
 	var near: float = win_near * scale
-	var tolerance: float = clampf(ImuSettings.lane_tolerance_deg, 30.0, 90.0)
+	var tolerance: float = clampf(Settings.lane_tolerance_deg, 30.0, 90.0)
 
 	var best: Dictionary = {}
 	var best_cost: float = 1e9
@@ -1070,25 +1078,25 @@ func _unhandled_input(event: InputEvent) -> void:
 			KEY_I:
 				# Through the settings, so the key and the panel's checkbox
 				# are the same switch and it survives the next run.
-				ImuSettings.show_arrow = not ImuSettings.show_arrow
-				ImuSettings.save_settings()
-				ImuSettings.changed.emit()
+				Settings.show_arrow = not Settings.show_arrow
+				Settings.save_settings()
+				Settings.changed.emit()
 				return
 			KEY_O:
 				# Next to I on purpose: that one hides the arrow entirely, this
 				# one leaves only the swings that registered as flicks.
-				ImuSettings.arrow_flicks_only = not ImuSettings.arrow_flicks_only
-				ImuSettings.save_settings()
-				ImuSettings.changed.emit()
+				Settings.arrow_flicks_only = not Settings.arrow_flicks_only
+				Settings.save_settings()
+				Settings.changed.emit()
 				return
 			KEY_BRACKETLEFT:
-				audio_offset_ms -= 5.0
+				Settings.set_assist("audio_offset_ms", audio_offset_ms - 5.0)
 			KEY_BRACKETRIGHT:
-				audio_offset_ms += 5.0
+				Settings.set_assist("audio_offset_ms", audio_offset_ms + 5.0)
 			KEY_SEMICOLON:
-				audio_offset_ms -= 25.0
+				Settings.set_assist("audio_offset_ms", audio_offset_ms - 25.0)
 			KEY_APOSTROPHE:
-				audio_offset_ms += 25.0
+				Settings.set_assist("audio_offset_ms", audio_offset_ms + 25.0)
 			KEY_COMMA:
 				_set_speed(speed_mult - 0.05)
 			KEY_PERIOD:
@@ -1111,6 +1119,16 @@ func _toggle_pause() -> void:
 		player.stream_paused = paused
 	if video:
 		video.paused = paused
+
+
+## Called by SettingsOverlay when it opens or closes mid-song. Routed through
+## the same flag the pause key uses rather than a second one (say, the
+## engine's own SceneTree.paused), so audio, video and the chart always agree
+## about whether they are paused instead of the overlay's idea of "paused"
+## and the song's disagreeing about which of them resumes first.
+func set_paused(value: bool) -> void:
+	if paused != value:
+		_toggle_pause()
 
 
 func _restart() -> void:
@@ -1588,7 +1606,7 @@ func _draw_one_imu_arrow(hand: String, arrow: Dictionary, origin: Vector2,
 	# where it went, and what it removes is everything that is not a flick --
 	# the live arrow tracking every wobble of an unsteady board, the rest dot,
 	# and the mark for a movement that was refused.
-	var flicks_only: bool = ImuSettings.arrow_flicks_only
+	var flicks_only: bool = Settings.arrow_flicks_only
 	if flicks_only and imu_flash <= 0.01:
 		return
 
@@ -1633,7 +1651,7 @@ func _draw_one_imu_arrow(hand: String, arrow: Dictionary, origin: Vector2,
 	var tint: Color = R_OUTER if lane <= 3 else L_OUTER
 	if two_boards:
 		tint = L_OUTER if hand == "left" else R_OUTER
-	if ImuSettings.colour_only_hits and not (imu_last_hit and imu_flash > 0.0):
+	if Settings.colour_only_hits and not (imu_last_hit and imu_flash > 0.0):
 		tint = IMU_GREY
 	var col: Color = tint.lerp(Color(1, 1, 1), 0.35 + 0.45 * pulse)
 	# The floor is high enough to stay readable over the brightest frames of
@@ -1673,7 +1691,7 @@ func _draw_one_imu_arrow(hand: String, arrow: Dictionary, origin: Vector2,
 		# The flick itself, thrown down its lane to the rim. White for a hit,
 		# grey for one that scored nothing -- same rule as the shaft.
 		var streak := Color(1, 1, 1)
-		if ImuSettings.colour_only_hits and not imu_last_hit:
+		if Settings.colour_only_hits and not imu_last_hit:
 			streak = IMU_GREY
 		var strength: float = clampf(
 			float(ImuInput.state_of(hand)["strength"]), 0.0, 1.0)

@@ -35,7 +35,7 @@ A rhythm game played by flicking a handheld IMU board. Four components:
 |---|---|---|
 | `firmware/` | Arduino C++ | Samples the IMU + magnetometer, streams ASCII records over USB CDC and UDP, accepts commands, stores calibration in NVS |
 | `dashboard/bbda/` | Python / PySide6 | Sensor dashboard, calibration, filters, position estimation, gesture detection |
-| `dashboard/game_bridge.py` | Python | Runs the flick detector against a board and posts flick events to the game over localhost UDP |
+| `bridge/run_bridge.py` | Python | Runs the flick detector against a board and posts flick events to the game over localhost UDP |
 | `game/` | Godot 4.7 / GDScript | The rhythm game; consumes flicks, mouse, touch and keyboard |
 | `leaderboard/` | Static HTML/JS | Reads the score file the game writes |
 
@@ -81,7 +81,7 @@ game/                    Godot 4.7 project
   autoload/
     TapInputBus.gd         input hub; every source reports taps here
     ImuInput.gd            UDP listener for the bridge
-    ImuSettings.gd         tuning, persisted to user://imu_settings.cfg
+    Settings.gd            every setting: IMU tuning, audio, gameplay
   scenes/
     Start.tscn             title screen (main scene)
     MapSelect.tscn         chart picker
@@ -730,19 +730,18 @@ turning the board over slowly registers as reliably as throwing it over.
 
 ```bash
 cd dashboard
-python game_bridge.py                       # find the board on USB
-python game_bridge.py --port COM7           # a particular serial port
-python game_bridge.py --host 192.168.1.50   # over WiFi
-python game_bridge.py --list                # what serial ports exist
-python game_bridge.py --demo                # no board: fake flicks
+python run_bridge.py                       # find the board on USB
+python run_bridge.py --port COM7           # a particular serial port
+python run_bridge.py --host 192.168.1.50   # over WiFi
+python run_bridge.py --list                # what serial ports exist
+python run_bridge.py --demo                # no board: fake flicks
 ```
 
 Two boards, one per note colour:
 
 ```bash
-python game_bridge.py --board left=COM7 --board right=COM9
-python game_bridge.py --board blue=COM7:+Y --board pink=COM9:-X
-python game_bridge.py --two-boards          # find both, left is the first
+python run_bridge.py --board left=COM7 --board right=COM9
+python run_bridge.py --board blue=COM7:+Y --board pink=COM9:-X
 ```
 
 Blue notes are the left hand, pink the right. A board given a hand may only hit
@@ -852,9 +851,9 @@ list.
 |---|---|
 | `TapInputBus` | the input hub above |
 | `ImuInput` | UDP listener; emits `flick_received`, `link_changed`, `board_changed`, `motion_updated`, `flick_refused`. Link timeout 3 s — the bridge sends a status record every second. `board_changed` is separate from `link_changed` because the bridge can be running perfectly while the board is unplugged. |
-| `ImuSettings` | tuning, saved to `user://imu_settings.cfg` on change, format version 4 |
+| `Settings` | every setting -- IMU tuning, audio, gameplay -- saved to `user://imu_settings.cfg` on change, format version 5 |
 
-`ImuSettings` holds three kinds of value, which behave differently:
+`Settings` holds several kinds of value, which behave differently:
 
 * **Detection** (front axis, thresholds, swing and margin floors) belong to the
   bridge, because that is where the detector runs. This node remembers them,
@@ -996,9 +995,9 @@ Grade cutoffs are duplicated in the page so it agrees with the game.
 No hardware and no display required.
 
 ```bash
-python dashboard/tests/test_math.py        # 23 checks
-python dashboard/tests/test_motion.py      # 134 checks
-python dashboard/tests/test_gamebridge.py
+python bridge/tests/test_math.py        # 23 checks
+python bridge/tests/test_motion.py      # 134 checks
+python bridge/tests/test_gamebridge.py
 ```
 
 * **`test_math.py`** — ellipsoid fit, six-position solve, and the Madgwick

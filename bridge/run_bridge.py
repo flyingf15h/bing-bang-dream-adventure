@@ -1,16 +1,17 @@
 """Feeds the Godot game IMU flicks, over USB serial or over WiFi.
 
-    python game_bridge.py                       # find the board on USB
-    python game_bridge.py --port COM7           # a particular serial port
-    python game_bridge.py --host 192.168.1.50   # over WiFi instead
-    python game_bridge.py --list                # what serial ports exist
-    python game_bridge.py --demo                # no board: fake flicks
+    python run_bridge.py                       # find every board on USB
+    python run_bridge.py --port COM7           # a particular serial port
+    python run_bridge.py --host 192.168.1.50   # over WiFi instead
+    python run_bridge.py --list                # what serial ports exist
+    python run_bridge.py --demo                # no board: fake flicks
 
-Two boards, one per note colour:
+With no flags at all this finds every board on USB: one plays every note,
+two become the blue and pink hands, in the order the system lists them. Name
+them outright instead when that order is not the one wanted:
 
-    python game_bridge.py --board left=COM7 --board right=COM9
-    python game_bridge.py --board blue=COM7:+Y --board pink=COM9:-X
-    python game_bridge.py --two-boards          # find both, left is the first
+    python run_bridge.py --board left=COM7 --board right=COM9
+    python run_bridge.py --board blue=COM7:+Y --board pink=COM9:-X
 
 The blue notes are the left hand and the pink ones are the right, which is what
 the charts already call them. A board given a hand may only hit notes of that
@@ -26,7 +27,7 @@ Leave it running alongside the game. It prints a line per flick with -v, which
 is the quickest way to tell whether a flick that did not register was missed by
 the detector or lost between here and the game.
 
-See dashboard/bbda/gamebridge.py for the wire format and the reasoning.
+See bridge/bbda/service.py for the wire format and the reasoning.
 """
 
 from __future__ import annotations
@@ -36,11 +37,13 @@ import math
 import sys
 import threading
 import time
+from pathlib import Path
 
-from bbda.gamebridge import (
+from bbda.service import (
     DEFAULT_GAME_PORT,
     BridgeConfig,
     GameBridge,
+    beacon_listener,
     find_all_board_ports,
     make_link,
     normalise_hand,
@@ -246,12 +249,12 @@ def split_host(target: str) -> tuple[str, int]:
 def plan_boards(args, parser) -> list[tuple[str, str, str | None, str | None, int]]:
     """Work out which boards to open, as (hand, target, front, host, udp_port).
 
-    Three ways in, and they are mutually exclusive because mixing them can only
-    express something one of them already says more clearly:
-    ``--board`` names each board and its colour, ``--two-boards`` finds two and
-    assigns them in the order the system lists them, and the original
-    ``--port`` / ``--host`` / nothing-at-all opens one board that plays
-    everything.
+    ``--board`` names each board and its colour outright. ``--port`` / ``--host``
+    name one board explicitly. With none of those, the default is to look: find
+    every board on USB and assign colours by how many turned up. One board plays
+    everything, exactly as a single-board setup always has; two become the blue
+    and pink hands, in the order the system lists them, which used to need
+    ``--two-boards`` and now needs nothing.
     """
     if args.board:
         planned = []
@@ -272,28 +275,23 @@ def plan_boards(args, parser) -> list[tuple[str, str, str | None, str | None, in
                          "plays the blue notes and one plays the pink")
         return planned
 
-    if args.two_boards:
-        found = find_all_board_ports()
-        if len(found) < 2:
-            parser.error(
-                f"--two-boards needs two boards and found {len(found)}"
-                + (f" ({found[0]})" if found else "")
-                + ". `--list` shows every port; on an ESP32-S3 a port only "
-                  "appears once its sketch is running, so a board that is "
-                  "mid-reset or on a power-only cable will not be there. "
-                  "`--board left=COM7 --board right=COM9` names them outright.")
-        # First listed gets the blue notes. Arbitrary, and said out loud when
-        # the boards are announced, because the alternative is the player
-        # discovering it by having every note score against the wrong colour.
-        return [("left", found[0], None, None, 3333),
-                ("right", found[1], None, None, 3333)]
-
     host, udp_port = (split_host(args.host) if args.host else (None, 3333))
     if host:
         return [("", host, None, host, udp_port)]
     if args.port:
         return [("", args.port, None, None, 3333)]
-    return [("", "", None, None, 3333)]     # empty target: find it
+
+    # Zero-flag default: look for every board on USB before opening anything.
+    found = find_all_board_ports()
+    if len(found) >= 2:
+        # First listed gets the blue notes. Arbitrary, and said out loud when
+        # the boards are announced, because the alternative is the player
+        # discovering it by having every note score against the wrong colour.
+        return [("left", found[0], None, None, 3333),
+                ("right", found[1], None, None, 3333)]
+    if len(found) == 1:
+        return [("", found[0], None, None, 3333)]
+    return [("", "", None, None, 3333)]     # none yet: connect() retries and finds it
 
 
 def connect(bridge: GameBridge, args, target: str, host: str | None,
@@ -336,7 +334,28 @@ def connect(bridge: GameBridge, args, target: str, host: str | None,
             return False
 
 
+def _redirect_output_when_frozen() -> None:
+    """Send print() to a log file instead of a console that does not exist.
+
+    Bundled as a standalone .exe and launched by the game rather than from a
+    terminal, this process has no console to write to -- on Windows, a
+    frozen build's ``sys.stdout``/``stderr`` can be ``None``, and printing to
+    that raises before the first line ever gets out. Everything this process
+    prints is exactly what someone reaches for when a board is not
+    registering, so it still has to go somewhere: a file next to the
+    executable, which is the one location that is still findable with the
+    game's own window as the only thing on screen.
+    """
+    if not getattr(sys, "frozen", False):
+        return
+    log_path = Path(sys.executable).with_name("bridge.log")
+    log_file = open(log_path, "w", encoding="utf-8", buffering=1)
+    sys.stdout = log_file
+    sys.stderr = log_file
+
+
 def main() -> int:
+    _redirect_output_when_frozen()
     # Python block-buffers stdout when it is not a terminal, which for this
     # tool defeats the point: the usual way to keep a record of a session is
     # to pipe it to a file or a log window, and a flick log that appears in
@@ -369,9 +388,6 @@ def main() -> int:
         help="a board and the note colour it plays, repeatable: "
              "left=COM7 (blue notes), right=COM9 (pink), "
              "blue=192.168.1.5:+Y to pin a front axis or use WiFi")
-    transport.add_argument(
-        "--two-boards", action="store_true",
-        help="find two boards on USB and give the first the blue notes")
     parser.add_argument("--demo", action="store_true",
                         help="send fake flicks without a board, to test the game")
     parser.add_argument("--simulate-flicks", action="store_true",
@@ -536,6 +552,7 @@ def _serve(bridges: list[GameBridge], args) -> None:
         # editing: this is how often a slider being dragged is acted on, and a
         # half-second lag there reads as the control having no effect.
         time.sleep(0.05)
+        beacon_listener.poll()
         for bridge in bridges:
             bridge.poll_control()
             bridge.expire_bias_write()
