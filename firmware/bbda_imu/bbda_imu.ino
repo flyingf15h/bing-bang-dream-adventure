@@ -84,6 +84,15 @@ static const uint16_t UDP_LISTEN_PORT_DEFAULT = 3333;
 static const size_t   UDP_BUF_SIZE      = 1200;
 static const uint32_t UDP_MAX_LATENCY_US = 10000;   /* 10 ms */
 
+/* Discovery beacon. Fixed rather than following `udp port`, so a board is
+ * findable before anything has told it where to send data -- discovery has
+ * to work with zero configuration, which the configurable command port
+ * cannot promise, since it exists to be changed. Broadcast rather than
+ * addressed to any one host, because the whole point is that nothing on the
+ * network knows the board's address yet either. */
+static const uint16_t UDP_BEACON_PORT = 3336;
+static const uint32_t UDP_BEACON_INTERVAL_MS = 1000;
+
 /* ICM-45605 is device family "A1": max +/-16 g and +/-2000 dps
  * (INV_IMU_HIGH_FSR_SUPPORTED is 0 for this part). */
 static const uint16_t ACCEL_FSR_MAX_G   = 16;
@@ -630,6 +639,8 @@ static void printNetwork() {
                                       : "wifi off");
   }
   emitInfo("net.auto", g_wifi_auto ? "join at boot" : "off");
+  emitInfo("net.beacon", connected ? "broadcasting on udp 3336, once a second"
+                                    : "off (needs a connection)");
 
   snprintf(buf, sizeof(buf), "%u%s", g_udp_listen_port,
            g_udp_listening ? "" : " (not listening)");
@@ -647,6 +658,40 @@ static void printNetwork() {
   emitInfo("out.sinks", (g_sinks & SINK_SERIAL) && (g_sinks & SINK_UDP) ? "serial + udp"
                         : (g_sinks & SINK_SERIAL) ? "serial only"
                         : (g_sinks & SINK_UDP) ? "udp only" : "none");
+}
+
+/* The broadcast address of whatever network the board has joined, computed
+ * from its own IP and mask rather than assumed to be x.x.x.255 -- a network
+ * smaller than a /24 has a different one, and guessing wrong would send the
+ * beacon nowhere. */
+static IPAddress broadcastAddress() {
+  IPAddress ip = WiFi.localIP();
+  IPAddress mask = WiFi.subnetMask();
+  IPAddress result;
+  for (int i = 0; i < 4; i++) result[i] = (uint8_t)(ip[i] | (uint8_t)~mask[i]);
+  return result;
+}
+
+/* Announces this board on the LAN so a host can find it without anyone ever
+ * typing its IP address in. Sent on its own fixed port, independent of both
+ * the (configurable) command/stream port and whatever destination `udp host`
+ * has pinned -- a board with a stale pinned peer, or one that has never
+ * received a single command yet, still has to be discoverable.
+ *
+ * The MAC address is the identity carried in the message: it survives a DHCP
+ * lease handing the board a new IP, which a bare address would not, and it is
+ * what lets a listener remember "this board" across a reconnect rather than
+ * "whatever last held this address". */
+static void sendBeacon() {
+  if (WiFi.status() != WL_CONNECTED || !g_udp_listening) return;
+  char msg[64];
+  int n = snprintf(msg, sizeof(msg), "BBDA-BEACON 1 %s %u\n",
+                    WiFi.macAddress().c_str(), g_udp_listen_port);
+  if (n <= 0) return;
+  if (g_udp.beginPacket(broadcastAddress(), UDP_BEACON_PORT) == 1) {
+    g_udp.write((const uint8_t *)msg, (size_t)n);
+    g_udp.endPacket();
+  }
 }
 
 /* ------------------------------------------------------------------ */
@@ -1038,6 +1083,9 @@ static void printHelp() {
     "  udp host <ip> [port]       pin the destination instead of auto-targeting\n"
     "  udp auto                   send to whoever last sent a command (default)\n"
     "  udp port <n>               local listen port, default 3333\n"
+    "  (while on WiFi, the board also broadcasts a discovery beacon once a\n"
+    "   second on UDP port 3336 -- nothing to configure, that's how a host\n"
+    "   finds its IP without one being typed in anywhere)\n"
     "  sink serial|udp|both       which transports carry the output at all\n"));
 }
 
@@ -1826,4 +1874,11 @@ void loop() {
   /* Push out a part-filled datagram once it has been waiting long enough, so
    * a slow output rate is not held hostage to the buffer filling up. */
   udpService();
+
+  static uint32_t next_beacon_ms = 0;
+  uint32_t now_ms = millis();
+  if ((int32_t)(now_ms - next_beacon_ms) >= 0) {
+    next_beacon_ms = now_ms + UDP_BEACON_INTERVAL_MS;
+    sendBeacon();
+  }
 }

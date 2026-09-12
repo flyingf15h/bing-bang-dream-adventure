@@ -430,7 +430,8 @@ class GameBridge:
             self.detector.reset()
             self.send_config()
         elif command == protocol.CMD_SCAN:
-            self._emit(protocol.scan(ports=list_serial_ports()))
+            self._emit(protocol.scan(ports=list_serial_ports(),
+                                      wifi=beacon_listener.list_boards()))
         elif command == protocol.CMD_TRANSPORT:
             self._switch_transport(message)
         elif command == protocol.CMD_CAL_START:
@@ -1411,6 +1412,81 @@ def find_board_port() -> Optional[str]:
         if _looks_like_board(port):
             return port.device
     return None
+
+
+#: Fixed port every board's discovery beacon goes to -- independent of the
+#: configurable command/stream port, so discovery still works even if that
+#: one has been changed, or never spoken to yet. Distinct from
+#: DEFAULT_GAME_PORT (3334), which is the game's own listen port for the
+#: bridge's records -- reusing it would fight the game for the same socket
+#: on the same machine. See bbda_imu.ino's sendBeacon() and protocol.h.
+BEACON_PORT = 3336
+
+#: How long a beacon is trusted before its board is dropped from the list.
+#: Long enough to ride out one lost broadcast (they go out once a second);
+#: short enough that a board switched off mid-session stops being offered
+#: within a few seconds rather than lingering as a stale, unreachable choice.
+BEACON_TIMEOUT_S = 6.0
+
+
+class BeaconListener:
+    """Listens for the firmware's WiFi discovery beacon.
+
+    Every board that has joined a network broadcasts ``BBDA-BEACON 1 <mac>
+    <port>`` once a second, so a board can be offered by name in the game's
+    Controllers tab without anyone ever typing its IP in. One listener is
+    shared by every :class:`GameBridge` in the process -- discovery is not a
+    per-hand concept, and two sockets both bound to the beacon port would
+    fight over it -- and it never blocks: a port already in use just means no
+    boards are found this way, not a crash.
+    """
+
+    def __init__(self, port: int = BEACON_PORT) -> None:
+        self._boards: dict[str, dict] = {}
+        self._socket: Optional[socket.socket] = None
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            sock.bind(("", port))
+            sock.setblocking(False)
+            self._socket = sock
+        except OSError as error:
+            print(f"[beacon] port {port} unavailable ({error}); WiFi boards "
+                  f"will need their IP entered by hand.")
+
+    def poll(self) -> None:
+        """Drain whatever beacons have arrived so far. Never blocks."""
+        if self._socket is None:
+            return
+        while True:
+            try:
+                data, (ip, _port) = self._socket.recvfrom(256)
+            except (BlockingIOError, InterruptedError):
+                return
+            except OSError:
+                return
+            parts = data.decode("utf-8", "ignore").split()
+            if len(parts) != 4 or parts[0] != "BBDA-BEACON" or parts[1] != "1":
+                continue
+            mac = parts[2]
+            try:
+                udp_port = int(parts[3])
+            except ValueError:
+                continue
+            self._boards[mac] = {"mac": mac, "ip": ip, "udp_port": udp_port,
+                                  "last_seen": time.monotonic()}
+
+    def list_boards(self) -> list[dict]:
+        """Boards heard from within :data:`BEACON_TIMEOUT_S`, for ``scan``."""
+        now = time.monotonic()
+        self._boards = {mac: board for mac, board in self._boards.items()
+                        if now - board["last_seen"] <= BEACON_TIMEOUT_S}
+        return [{"mac": b["mac"], "ip": b["ip"], "udp_port": b["udp_port"]}
+                for b in self._boards.values()]
+
+
+#: Shared by every GameBridge in the process -- see BeaconListener.
+beacon_listener = BeaconListener()
 
 
 def list_serial_ports() -> list[dict]:

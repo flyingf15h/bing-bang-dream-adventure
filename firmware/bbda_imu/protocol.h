@@ -23,6 +23,20 @@
  * several of them. Unless a destination has been pinned with `udp host`, the
  * board streams to whichever address last sent it a command.
  *
+ * Once on WiFi, the board also broadcasts a discovery beacon once a second
+ * on UDP port 3336, independent of the (configurable) command/stream port
+ * (and distinct from 3334, the port the game listens for the bridge's own
+ * records on -- see bridge/bbda/service.py's DEFAULT_GAME_PORT):
+ *
+ *   BBDA-BEACON 1 <mac> <udp_port>
+ *
+ * <mac> is the board's WiFi MAC address (its identity, since a DHCP lease can
+ * hand it a different IP later), and <udp_port> is the port it is currently
+ * listening for commands on. A listener reads the packet's source address for
+ * the IP -- the beacon itself carries no address of its own. This is what
+ * lets a host find a board's IP with nothing typed in anywhere; see
+ * bbda_imu.ino's sendBeacon() and bridge/bbda/service.py's BeaconListener.
+ *
  *   D,<t_us>,ax,ay,az,gx,gy,gz,mx,my,mz,temp_c,mag_fresh
  *       One sample. Accelerometer in g, gyroscope in dps, magnetometer
  *       in microtesla, temperature in degrees C. mag_fresh is 1 when the

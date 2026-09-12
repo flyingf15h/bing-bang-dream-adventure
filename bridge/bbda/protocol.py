@@ -40,9 +40,11 @@ Nothing is ever scored from one; ``detail`` is a sentence meant to be shown.
 
 New this release (v2)
 ----------------------
-``scan`` -- serial ports the bridge can see, and which look like boards. Sent
+``scan`` -- serial ports the bridge can see, and which look like boards, plus
+any WiFi boards the bridge has heard a discovery beacon from recently. Sent
 in reply to the ``scan`` command, so the game can offer a picker instead of
-only "found" or "not found".
+only "found" or "not found" -- and, for WiFi, instead of typing an IP in by
+hand at all.
 
 ``cal_state`` -- calibration step, progress, prompt text and per-axis quality,
 sent at ~10 Hz while a :class:`~bbda.calseq.CalSequence` is running, so the
@@ -243,13 +245,16 @@ def board_cal(gyro_bias: list) -> dict:
     return {"type": TYPE_BOARD_CAL, "gyro_bias": gyro_bias}
 
 
-def scan(ports: list) -> dict:
-    """Serial ports the bridge can see, and which look like boards.
+def scan(ports: list, wifi: list | None = None) -> dict:
+    """Serial ports the bridge can see, and WiFi boards it has heard from.
 
     ``ports`` is a list of ``{"device": ..., "description": ..., "looks_like_board":
-    ...}``, the reply to the ``scan`` command.
+    ...}``. ``wifi`` is a list of ``{"mac": ..., "ip": ..., "udp_port": ...}``,
+    boards that announced themselves over the network within the last few
+    seconds -- see ``bbda/service.py``'s ``BeaconListener``. Both are sent in
+    reply to the ``scan`` command.
     """
-    return {"type": TYPE_SCAN, "ports": ports}
+    return {"type": TYPE_SCAN, "ports": ports, **_present(wifi=wifi)}
 
 
 def cal_state(*, step: str, progress: float, prompt: str,

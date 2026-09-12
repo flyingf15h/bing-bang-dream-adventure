@@ -711,8 +711,8 @@ func _build_controller_section(hand: String) -> void:
 			Settings.switch_transport(hand, host_edit.text.strip_edges()))
 	transport_row.add_child(wifi_button)
 	var scan_button := Button.new()
-	scan_button.text = "scan for ports"
-	scan_button.tooltip_text = "List every serial port the bridge can see, in case USB found the wrong board or none"
+	scan_button.text = "scan"
+	scan_button.tooltip_text = "List every serial port and WiFi board the bridge can see, in case auto-detection found the wrong one or none"
 	scan_button.pressed.connect(func() -> void:
 		_pending_scan_hand = hand
 		Settings.scan())
@@ -771,10 +771,12 @@ func _open_calibration_wizard(hand: String) -> void:
 	get_tree().current_scene.add_child(wizard)
 
 
-## The reply to a "scan for ports" press: one button per port found, in
-## whichever board's section asked for it. Picking one pins that board to
-## that exact port rather than trusting auto-detection -- for when USB found
-## the wrong board, or none, with two or more connected.
+## The reply to a "scan" press: one button per serial port and WiFi board
+## found, in whichever board's section asked for it. A WiFi entry needs
+## nothing but a click -- its IP came from the board's own beacon, not from
+## anyone typing it in -- and picking any result pins that board to that
+## exact target rather than trusting auto-detection, for when it found the
+## wrong board, or none, with two or more connected.
 func _on_scan_received(record: Dictionary) -> void:
 	if _pending_scan_hand == "" or not _controller_rows.has(_pending_scan_hand):
 		return
@@ -785,13 +787,33 @@ func _on_scan_received(record: Dictionary) -> void:
 		child.queue_free()
 
 	var ports: Array = record.get("ports", [])
-	if ports.is_empty():
+	var wifi: Array = record.get("wifi", [])
+
+	if ports.is_empty() and wifi.is_empty():
 		var none_label := Label.new()
-		none_label.text = "No serial ports found."
+		none_label.text = "No serial ports or WiFi boards found."
 		none_label.add_theme_font_size_override("font_size", 11)
 		none_label.modulate = Color(1, 1, 1, 0.5)
 		results.add_child(none_label)
 		return
+
+	# WiFi first: a board that has announced itself by beacon needs nothing
+	# typed in at all, which is the point of this whole feature, so it should
+	# not be buried under a list of serial ports someone has to read past.
+	for board in wifi:
+		var ip := String(board.get("ip", ""))
+		var mac := String(board.get("mac", ""))
+		var udp_port := int(board.get("udp_port", 3333))
+		if ip == "":
+			continue
+		var button := Button.new()
+		button.text = "WiFi  %s   (%s)" % [ip, mac]
+		button.tooltip_text = "Announced itself just now -- no IP to type in"
+		button.modulate = Color(0.8, 1.0, 0.85)
+		button.pressed.connect(func() -> void:
+			Settings.switch_transport(hand, ip, udp_port))
+		results.add_child(button)
+
 	for port in ports:
 		var device := String(port.get("device", ""))
 		var looks_like_board := bool(port.get("looks_like_board", false))

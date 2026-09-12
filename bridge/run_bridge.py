@@ -43,6 +43,7 @@ from bbda.service import (
     DEFAULT_GAME_PORT,
     BridgeConfig,
     GameBridge,
+    beacon_listener,
     find_all_board_ports,
     make_link,
     normalise_hand,
@@ -551,6 +552,7 @@ def _serve(bridges: list[GameBridge], args) -> None:
         # editing: this is how often a slider being dragged is acted on, and a
         # half-second lag there reads as the control having no effect.
         time.sleep(0.05)
+        beacon_listener.poll()
         for bridge in bridges:
             bridge.poll_control()
             bridge.expire_bias_write()
