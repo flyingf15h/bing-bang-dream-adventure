@@ -1,6 +1,6 @@
 # Builds the whole build/ folder a player runs: the exported game plus the
-# bridge, ready to hand to a machine with no Godot, no repo and no Python
-# packages installed yet. Run from the repository root:
+# bundled bridge, ready to hand to a machine with no Godot, no repo and no
+# Python at all. Run from the repository root:
 #
 #   powershell -File tools/build_windows.ps1
 #
@@ -16,23 +16,19 @@ if ($LASTEXITCODE -ne 0) { throw "export failed ($LASTEXITCODE)" }
 
 Write-Host "Exported build\BingBangDreamAdventure.exe"
 
-# The bridge ships as source, not as a second .exe -- it is a two-file
-# dependency list away from running anywhere Python does, and freezing it
-# would only add a second build step with its own way to go stale.
-Copy-Item bridge\run_bridge.py build\ -Force
-Copy-Item bridge\requirements.txt build\ -Force
-Copy-Item bridge\bbda build\bbda -Recurse -Force
-# __pycache__ is a byproduct of having run the bridge from source in this
-# repo, not part of what ships -- Python regenerates it on the target
-# machine, and shipping this one would just be someone else's bytecode for
-# an interpreter version that may not match theirs.
-Get-ChildItem build\bbda -Recurse -Directory -Filter __pycache__ |
-	Remove-Item -Recurse -Force
+# Bundled rather than shipped as source: the game launches build\bridge\
+# bridge.exe itself (see game/autoload/BridgeLauncher.gd) the moment it
+# starts, and killing it again on quit. That only works unattended if
+# nothing about starting it needs a person to have run pip first.
+powershell -File (Join-Path $PSScriptRoot "build_bridge.ps1")
+if ($LASTEXITCODE -ne 0) { throw "bridge build failed ($LASTEXITCODE)" }
 
 @"
-1. pip install -r requirements.txt
-2. python run_bridge.py
-3. run BingBangDreamAdventure.exe
+Plug in your controller(s), then run BingBangDreamAdventure.exe.
+
+The bridge (bridge\bridge.exe) starts and stops with the game -- nothing
+else to install, nothing else to run. If a board is not being found, check
+bridge\bridge.log, written next to bridge.exe each time it runs.
 "@ | Set-Content -Path build\README.txt -NoNewline
 
 Write-Host "build\ is ready to ship."

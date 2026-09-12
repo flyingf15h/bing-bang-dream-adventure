@@ -15,6 +15,12 @@ __pycache__/
 .venv/
 venv/
 
+# --- PyInstaller (bridge.exe build) ---
+bridge/build_pyinstaller/
+bridge/dist/
+bridge/*.spec
+bridge/bridge.log
+
 # --- Arduino ---
 firmware/**/build/
 *.elf

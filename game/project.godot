@@ -21,6 +21,7 @@ buses/default_bus_layout="res://default_bus_layout.tres"
 
 [autoload]
 
+BridgeLauncher="*res://autoload/BridgeLauncher.gd"
 TapInputBus="*res://autoload/TapInputBus.gd"
 ImuInput="*res://autoload/ImuInput.gd"
 Settings="*res://autoload/Settings.gd"

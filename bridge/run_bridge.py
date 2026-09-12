@@ -37,6 +37,7 @@ import math
 import sys
 import threading
 import time
+from pathlib import Path
 
 from bbda.service import (
     DEFAULT_GAME_PORT,
@@ -332,7 +333,28 @@ def connect(bridge: GameBridge, args, target: str, host: str | None,
             return False
 
 
+def _redirect_output_when_frozen() -> None:
+    """Send print() to a log file instead of a console that does not exist.
+
+    Bundled as a standalone .exe and launched by the game rather than from a
+    terminal, this process has no console to write to -- on Windows, a
+    frozen build's ``sys.stdout``/``stderr`` can be ``None``, and printing to
+    that raises before the first line ever gets out. Everything this process
+    prints is exactly what someone reaches for when a board is not
+    registering, so it still has to go somewhere: a file next to the
+    executable, which is the one location that is still findable with the
+    game's own window as the only thing on screen.
+    """
+    if not getattr(sys, "frozen", False):
+        return
+    log_path = Path(sys.executable).with_name("bridge.log")
+    log_file = open(log_path, "w", encoding="utf-8", buffering=1)
+    sys.stdout = log_file
+    sys.stderr = log_file
+
+
 def main() -> int:
+    _redirect_output_when_frozen()
     # Python block-buffers stdout when it is not a terminal, which for this
     # tool defeats the point: the usual way to keep a record of a session is
     # to pipe it to a file or a log window, and a flick log that appears in
