@@ -63,7 +63,11 @@ var _lane_misses: int = 0
 ## only updates labels rather than rebuilding on every frame.
 var _controllers_col: VBoxContainer
 var _known_hands: Array = []
-var _controller_rows: Dictionary = {}   # hand -> {board, wire, rate, host_edit}
+var _controller_rows: Dictionary = {}   # hand -> {board, wire, scan_results}
+## Which board's "scan for ports" button was pressed last, so the reply --
+## scan() has no hand of its own, see Settings.scan() -- lands in the right
+## section instead of whichever happened to ask first.
+var _pending_scan_hand: String = ""
 
 
 func _ready() -> void:
@@ -77,6 +81,7 @@ func _ready() -> void:
 	Settings.front_suggested.connect(_on_front_suggested)
 	Settings.rest_measured.connect(_on_rest_measured)
 	Settings.bias_written.connect(_on_bias_written)
+	Settings.scan_received.connect(_on_scan_received)
 	TapInputBus.tap_judged.connect(func(source: String, hit: bool) -> void:
 		if source != "imu":
 			return
@@ -687,6 +692,10 @@ func _build_controller_section(hand: String) -> void:
 	var transport_row := _new_row(_controllers_col)
 	var host_edit := LineEdit.new()
 	host_edit.placeholder_text = "IP for WiFi, e.g. 192.168.1.50"
+	# Pre-filled with wherever this board last answered over WiFi, if it ever
+	# has -- so reconnecting is "press WiFi", not "remember an address and
+	# type it in again".
+	host_edit.text = String(Settings.wifi_hosts.get(hand, ""))
 	host_edit.custom_minimum_size = Vector2(180, 0)
 	host_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	transport_row.add_child(host_edit)
@@ -701,6 +710,16 @@ func _build_controller_section(hand: String) -> void:
 		if host_edit.text.strip_edges() != "":
 			Settings.switch_transport(hand, host_edit.text.strip_edges()))
 	transport_row.add_child(wifi_button)
+	var scan_button := Button.new()
+	scan_button.text = "scan for ports"
+	scan_button.tooltip_text = "List every serial port the bridge can see, in case USB found the wrong board or none"
+	scan_button.pressed.connect(func() -> void:
+		_pending_scan_hand = hand
+		Settings.scan())
+	transport_row.add_child(scan_button)
+
+	var scan_results := VBoxContainer.new()
+	_controllers_col.add_child(scan_results)
 
 	var cal_row := _new_row(_controllers_col)
 	var calibrate := Button.new()
@@ -709,7 +728,9 @@ func _build_controller_section(hand: String) -> void:
 		_open_calibration_wizard(hand))
 	cal_row.add_child(calibrate)
 
-	_controller_rows[hand] = {"board": board_label, "wire": wire_value}
+	_controller_rows[hand] = {
+		"board": board_label, "wire": wire_value, "scan_results": scan_results,
+	}
 
 
 func _update_controller_rows(hands: Array) -> void:
@@ -748,6 +769,40 @@ func _open_calibration_wizard(hand: String) -> void:
 	var wizard: Node = scene.instantiate()
 	wizard.hand = hand
 	get_tree().current_scene.add_child(wizard)
+
+
+## The reply to a "scan for ports" press: one button per port found, in
+## whichever board's section asked for it. Picking one pins that board to
+## that exact port rather than trusting auto-detection -- for when USB found
+## the wrong board, or none, with two or more connected.
+func _on_scan_received(record: Dictionary) -> void:
+	if _pending_scan_hand == "" or not _controller_rows.has(_pending_scan_hand):
+		return
+	var hand: String = _pending_scan_hand
+	_pending_scan_hand = ""
+	var results: VBoxContainer = _controller_rows[hand]["scan_results"]
+	for child in results.get_children():
+		child.queue_free()
+
+	var ports: Array = record.get("ports", [])
+	if ports.is_empty():
+		var none_label := Label.new()
+		none_label.text = "No serial ports found."
+		none_label.add_theme_font_size_override("font_size", 11)
+		none_label.modulate = Color(1, 1, 1, 0.5)
+		results.add_child(none_label)
+		return
+	for port in ports:
+		var device := String(port.get("device", ""))
+		var looks_like_board := bool(port.get("looks_like_board", false))
+		var button := Button.new()
+		button.text = "%s  %s%s" % [device, String(port.get("description", "")),
+			"  (looks like a board)" if looks_like_board else ""]
+		if looks_like_board:
+			button.modulate = Color(0.8, 1.0, 0.85)
+		button.pressed.connect(func() -> void:
+			Settings.switch_transport(hand, "", 3333, device))
+		results.add_child(button)
 
 
 # ----------------------------------------------------------------------

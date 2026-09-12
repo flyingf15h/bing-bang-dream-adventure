@@ -429,6 +429,8 @@ class GameBridge:
         elif command == protocol.CMD_RESET:
             self.detector.reset()
             self.send_config()
+        elif command == protocol.CMD_SCAN:
+            self._emit(protocol.scan(ports=list_serial_ports()))
         elif command == protocol.CMD_TRANSPORT:
             self._switch_transport(message)
         elif command == protocol.CMD_CAL_START:
@@ -1380,6 +1382,19 @@ class GameBridge:
 ESPRESSIF_VID = 0x303A
 
 
+def _looks_like_board(port) -> bool:
+    """Whether a ``list_ports.comports()`` entry is plausibly one of these
+    boards -- exact when the vendor ID says Espressif, a guess from the
+    description otherwise. The one heuristic every port-finding function
+    here shares, so a board that starts enumerating differently only needs
+    fixing in one place.
+    """
+    if port.vid == ESPRESSIF_VID:
+        return True
+    text = f"{port.description} {port.manufacturer or ''}".lower()
+    return any(k in text for k in ("esp32", "espressif", "usb serial", "cdc"))
+
+
 def find_board_port() -> Optional[str]:
     """The most likely serial port for the board, or None.
 
@@ -1393,10 +1408,30 @@ def find_board_port() -> Optional[str]:
         if port.vid == ESPRESSIF_VID:
             return port.device
     for port in ports:
-        text = f"{port.description} {port.manufacturer or ''}".lower()
-        if any(k in text for k in ("esp32", "espressif", "usb serial", "cdc")):
+        if _looks_like_board(port):
             return port.device
     return None
+
+
+def list_serial_ports() -> list[dict]:
+    """Every serial port the OS can see, for the ``scan`` command.
+
+    Unlike find_all_board_ports(), this lists everything rather than only
+    what looks like a board: the game's Controllers tab uses it to let
+    someone pick a port by hand when auto-detection found the wrong one, or
+    none, and a port missing from the list entirely is itself the answer as
+    often as a wrong guess is.
+    """
+    from serial.tools import list_ports
+
+    return [
+        {
+            "device": port.device,
+            "description": port.description or "",
+            "looks_like_board": _looks_like_board(port),
+        }
+        for port in list_ports.comports()
+    ]
 
 
 #: What the two note colours are called, in every spelling somebody might type.
@@ -1428,12 +1463,7 @@ def find_all_board_ports() -> list[str]:
 
     ports = list(list_ports.comports())
     exact = [p.device for p in ports if p.vid == ESPRESSIF_VID]
-    loose = [
-        p.device for p in ports
-        if p.vid != ESPRESSIF_VID
-        and any(k in f"{p.description} {p.manufacturer or ''}".lower()
-                for k in ("esp32", "espressif", "usb serial", "cdc"))
-    ]
+    loose = [p.device for p in ports if p.vid != ESPRESSIF_VID and _looks_like_board(p)]
     return exact + loose
 
 

@@ -280,6 +280,8 @@ func _handle_datagram(text: String) -> void:
 			Settings.cal_state_received.emit(record)
 		Wire.TYPE_CAL_DONE:
 			Settings.cal_done_received.emit(record)
+		Wire.TYPE_SCAN:
+			Settings.scan_received.emit(record)
 		Wire.TYPE_TRANSPORT:
 			_handle_transport(record)
 		Wire.TYPE_HELLO:
@@ -441,6 +443,11 @@ func _handle_hello(record: Dictionary) -> void:
 	transport = String(state["transport"])
 	status_text = _prefix(hand) + String(state["status"])
 	print("[imu] ", status_text)
+	if transport == "udp":
+		# So the Controllers tab's WiFi field is pre-filled with wherever this
+		# board answered from last, instead of asking for the same address to
+		# be typed in again every time the game restarts.
+		Settings.remember_wifi_host(hand, String(record.get("target", "")))
 	if not board_connected:
 		board_connected = true
 		board_changed.emit(true)
@@ -458,6 +465,8 @@ func _handle_transport(record: Dictionary) -> void:
 	status_text = _prefix(hand) + "now on %s via %s" % [
 		record.get("target", "?"), state["transport"]]
 	print("[imu] ", status_text)
+	if transport == "udp":
+		Settings.remember_wifi_host(hand, String(record.get("target", "")))
 
 
 func _handle_status(record: Dictionary) -> void:

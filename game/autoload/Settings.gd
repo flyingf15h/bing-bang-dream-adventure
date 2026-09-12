@@ -50,6 +50,10 @@ signal bias_written(record: Dictionary)
 signal cal_state_received(record: Dictionary)
 signal cal_done_received(record: Dictionary)
 
+## Emitted with the reply to scan(): {"ports": [{"device", "description",
+## "looks_like_board"}, ...]}.
+signal scan_received(record: Dictionary)
+
 const SAVE_PATH := "user://imu_settings.cfg"
 
 ## Bumped if the meaning of a stored value ever changes. An older file is read
@@ -317,6 +321,20 @@ func clear_aim(hand: String = "") -> void:
 	set_aim(0.0, false, hand)
 
 
+## The last WiFi address each board connected on, keyed by hand ("" for a
+## single untagged board). Purely a convenience for the Controllers tab's
+## WiFi field -- nothing here acts on it, and nothing auto-reconnects from
+## it; it only saves retyping an address that was typed in once already.
+var wifi_hosts: Dictionary = {}
+
+
+func remember_wifi_host(hand: String, host: String) -> void:
+	if host == "" or wifi_hosts.get(hand, "") == host:
+		return
+	wifi_hosts[hand] = host
+	save_settings()
+
+
 ## True when a correction is in force, so a display can say so rather than
 ## leaving somebody to wonder why the raw bearing and the lane disagree.
 func aim_corrected(hand: String = "") -> bool:
@@ -482,15 +500,28 @@ func _send_to_port(port: int, message: Dictionary) -> void:
 
 
 ## Ask one board to reopen on a different transport, live -- the Controllers
-## tab's USB/WiFi toggle. Leave `host` empty to go back to USB (the bridge
-## auto-finds the port); set it (with `udp_port` if not the board's default)
-## to move to WiFi.
-func switch_transport(hand: String, host: String = "", udp_port: int = 3333) -> void:
+## tab's USB/WiFi toggle. Leave both `host` and `port` empty to go back to
+## USB with the bridge auto-finding it; set `host` (with `udp_port` if not
+## the board's default) to move to WiFi; set `port` to pin USB to a specific
+## serial port rather than trusting auto-detection -- what `scan()`'s
+## results are for, when auto-detect found the wrong board or none.
+func switch_transport(hand: String, host: String = "", udp_port: int = 3333,
+		port: String = "") -> void:
 	var message := {"cmd": Wire.CMD_TRANSPORT}
 	if host != "":
 		message["host"] = host
 		message["udp_port"] = udp_port
+	elif port != "":
+		message["port"] = port
 	send_to_hand(hand, message)
+
+
+## Ask a bridge to list every serial port it can see, tagged with which look
+## like a board. Any bridge answers identically -- the port list is a fact
+## about the machine, not about which board asked -- so this reaches
+## whichever one is easiest, not a particular hand.
+func scan() -> void:
+	_send({"cmd": Wire.CMD_SCAN})
 
 
 ## Every bridge control port the game has heard from, lowest first.
@@ -622,6 +653,7 @@ func save_settings() -> void:
 	file.set_value("aim", "hand_aim", hand_aim)
 	for key in audio():
 		file.set_value("audio", key, audio()[key])
+	file.set_value("network", "wifi_hosts", wifi_hosts)
 	file.save(SAVE_PATH)
 
 
@@ -651,6 +683,7 @@ func _read_from(file: ConfigFile) -> void:
 	bearing_offset_deg = fposmod(float(file.get_value("aim", "bearing_offset_deg", bearing_offset_deg)), 360.0)
 	bearing_flip = bool(file.get_value("aim", "bearing_flip", bearing_flip))
 	hand_aim = file.get_value("aim", "hand_aim", {})
+	wifi_hosts = file.get_value("network", "wifi_hosts", {})
 	_read_audio({
 		"vol_master": file.get_value("audio", "vol_master", vol_master),
 		"vol_music": file.get_value("audio", "vol_music", vol_music),
