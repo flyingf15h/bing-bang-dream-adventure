@@ -196,7 +196,6 @@ func _ready() -> void:
 	Settings.changed.connect(func() -> void:
 		show_imu_arrow = Settings.show_arrow
 		audio_offset_ms = Settings.audio_offset_ms)
-	add_child(preload("res://scripts/ImuDebugPanel.gd").new())
 
 
 func _on_resize() -> void:
@@ -1119,6 +1118,16 @@ func _toggle_pause() -> void:
 		player.stream_paused = paused
 	if video:
 		video.paused = paused
+
+
+## Called by SettingsOverlay when it opens or closes mid-song. Routed through
+## the same flag the pause key uses rather than a second one (say, the
+## engine's own SceneTree.paused), so audio, video and the chart always agree
+## about whether they are paused instead of the overlay's idea of "paused"
+## and the song's disagreeing about which of them resumes first.
+func set_paused(value: bool) -> void:
+	if paused != value:
+		_toggle_pause()
 
 
 func _restart() -> void:

@@ -1,30 +1,25 @@
 extends CanvasLayer
-## The IMU debug panel: a checkbox, and everything behind it.
+## The settings menu: a gear button, and everything behind it, on every
+## screen. Replaces the old ImuDebugPanel -- this is a menu a player is meant
+## to use, not a debug dump, so it is organised by what someone came here to
+## do (Audio, Controllers, Gameplay) with the detection internals collapsed
+## into an Advanced tab rather than the only tab.
 ##
-## Add it to any scene -- `add_child(preload("res://scripts/ImuDebugPanel.gd").new())`
-## -- and it brings its own checkbox, its own layout and its own connections.
-## It is built in code rather than as a .tscn for that reason: a scene would
-## have to be instanced and wired up per screen, and this has to be available
-## on the title screen and in the middle of a song without either of them
-## knowing anything about it.
+## Built in code, like ImuDebugPanel was, and for the same reason: it has to
+## be available on the title screen and in the middle of a song without
+## either scene knowing anything about it. A CanvasLayer autoload gets that
+## for free -- it exists for the life of the process, not the scene.
 ##
-## What it is for
-## --------------
-## Two questions cannot be answered by playing: "which way does the board think
-## it is pointing" and "is a flick that did not register too weak, or aimed
-## wrong". Both are answerable in seconds with the right numbers on screen, and
-## essentially unanswerable without them -- which is why tuning an IMU without
-## a panel like this turns into changing a flag and replaying a song.
-##
-## Nothing here is computed locally. Detection lives in the bridge, so every
-## control sends its change there and then displays what the bridge reports
-## back. A slider that moved but did not take effect will not look like it did.
+## Nothing here is computed locally for the IMU tabs. Detection lives in the
+## bridge, so a control sends its change there and displays what the bridge
+## reports back; Settings.applied is that echo.
 
 const FRONTS: PackedStringArray = ["+X", "-X", "+Y", "-Y", "+Z", "-Z"]
 
 ## Directions to aim a learning flick at, as bearings clockwise from up. Only
-## the four square ones: they are the ones a person can make accurately without
-## thinking about it, which is the whole requirement for a reference gesture.
+## the four square ones: they are the ones a person can make accurately
+## without thinking about it, which is the whole requirement for a reference
+## gesture.
 const LEARN_DIRECTIONS := [
 	["up", 0.0], ["right", 90.0], ["down", 180.0], ["left", 270.0],
 ]
@@ -36,9 +31,18 @@ const PUSH_DELAY := 0.25
 ## Pixels of list per wheel notch.
 const WHEEL_STEP := 56
 
-var _check: CheckButton
+## Records kept in the Advanced tab's raw log.
+const LOG_LINES := 24
+
+var _gear: Button
 var _panel: PanelContainer
+var _tabs: TabContainer
+var _open: bool = false
+
 var _rows: Dictionary = {}          # name -> Label, for the live readouts
+var _sliders: Dictionary = {}
+var _dialog: FileDialog
+
 var _front_picker: OptionButton
 var _learn_picker: OptionButton
 var _learn_result: Label
@@ -47,41 +51,27 @@ var _suggested_front: String = ""
 var _rest_result: Label
 var _bias_result: Label
 var _file_note: Label
-var _sliders: Dictionary = {}
-var _dialog: FileDialog
-var _scroll: ScrollContainer
+var _profile_note: Label
+var _log_view: RichTextLabel
 
 var _push_in: float = -1.0
 var _lane_hits: int = 0
 var _lane_misses: int = 0
 
-## --- the direction check --------------------------------------------------
-## Which direction it is waiting for (-1 when idle), what it has collected so
-## far, and the correction it worked out but has not applied yet.
-var _check_step: int = -1
-var _check_samples: Array = []
-var _check_offset: float = 0.0
-var _check_flip: bool = false
-## Which board threw the flicks being checked. The correction is per board --
-## two boards are two mountings -- so a check run with the pink one in hand must
-## not overwrite what was measured for the blue one. Set from the first flick of
-## the run, and empty for a single untagged board.
-var _check_hand: String = ""
-var _check_prompt: Label
-var _check_result: Label
-var _check_apply: Button
-var _check_start: Button
-## When to give up waiting for a flick. A check left half-finished would hold
-## the board out of the input bus for ever, which looks exactly like the board
-## having died.
-var _capture_deadline: float = -1.0
+## Controllers tab: rebuilt whenever the set of active hands changes, since a
+## second board can appear mid-session. Per-hand widgets are kept so refresh
+## only updates labels rather than rebuilding on every frame.
+var _controllers_col: VBoxContainer
+var _known_hands: Array = []
+var _controller_rows: Dictionary = {}   # hand -> {board, wire, rate, host_edit}
 
 
 func _ready() -> void:
 	layer = 100
+	process_mode = Node.PROCESS_MODE_ALWAYS
 	_build()
-	_check.button_pressed = Settings.panel_open
-	_panel.visible = Settings.panel_open
+	_open = Settings.panel_open
+	_panel.visible = _open
 
 	Settings.changed.connect(_refresh_controls)
 	Settings.front_suggested.connect(_on_front_suggested)
@@ -94,37 +84,27 @@ func _ready() -> void:
 			_lane_hits += 1
 		else:
 			_lane_misses += 1)
-
-	# Straight from ImuInput rather than from the input bus: during a check the
-	# flicks are deliberately kept off the bus, and these are the only place
-	# they still appear.
-	ImuInput.flick_received.connect(_on_check_flick)
+	ImuInput.flick_received.connect(_on_flick_logged)
+	ImuInput.flick_refused.connect(_on_refusal_logged)
 
 	_refresh_controls()
 	Settings.request_config()
 	set_process(true)
 
 
-func _exit_tree() -> void:
-	## Never leave the board captured. This node dies on every scene change,
-	## and a check running when that happens would otherwise take the input bus
-	## with it -- the board would stop playing and nothing would say why.
-	ImuInput.capture_only = false
-
-
 func _input(event: InputEvent) -> void:
-	## Take the wheel before any control can see it, and scroll the list with it.
-	##
-	## Done here rather than left to the containers because the default
-	## behaviour is genuinely dangerous in this panel: a slider under the
-	## pointer treats a wheel notch as an edit, so running the list past the
-	## sensitivity section retunes the board -- silently, and applied to the
-	## bridge before there is any way to notice. The controls are also set
-	## non-scrollable, but this is the part that does not depend on getting
-	## Godot's mouse filters exactly right on every container in the tree.
-	if not _panel.visible or not (event is InputEventMouseButton):
+	# Esc only ever closes this -- it never opens it. Opening is the gear's
+	# job alone, so an Esc pressed with the overlay closed reaches whatever
+	# else binds it (Gameplay.gd's "back to the title") completely normally.
+	if _open and event is InputEventKey and event.pressed and not event.echo \
+			and event.keycode == KEY_ESCAPE:
+		_toggle()
+		get_viewport().set_input_as_handled()
 		return
-	if not event.pressed:
+
+	# Route the wheel to whichever tab is showing, wherever over the panel it
+	# lands -- see _new_tab() for why a bare ScrollContainer is not enough.
+	if not _open or not (event is InputEventMouseButton) or not event.pressed:
 		return
 	var step := 0
 	if event.button_index == MOUSE_BUTTON_WHEEL_DOWN:
@@ -133,20 +113,44 @@ func _input(event: InputEvent) -> void:
 		step = -1
 	if step == 0 or not _panel.get_global_rect().has_point(event.position):
 		return
-	_scroll.scroll_vertical += step * WHEEL_STEP
+	var scroll := _tabs.get_current_tab_control() as ScrollContainer
+	if scroll:
+		scroll.scroll_vertical += step * WHEEL_STEP
 	get_viewport().set_input_as_handled()
 
 
 func _process(delta: float) -> void:
-	if _capture_deadline > 0.0 and Time.get_ticks_msec() * 0.001 > _capture_deadline:
-		_end_check("gave up waiting for a flick -- the board is playable again")
 	if _push_in > 0.0:
 		_push_in -= delta
 		if _push_in <= 0.0:
 			Settings.push_to_bridge()
 			Settings.save_settings()
-	if _panel.visible:
-		_refresh_readouts()
+	if not _open:
+		return
+	_refresh_controllers_tab()
+	_refresh_readouts()
+
+
+# ----------------------------------------------------------------------
+# Open / close
+# ----------------------------------------------------------------------
+func _toggle() -> void:
+	_open = not _open
+	_panel.visible = _open
+	Settings.panel_open = _open
+	Settings.save_settings()
+	_apply_pause(_open)
+	if _open:
+		Settings.request_config()
+		_refresh_controls()
+
+
+## Pauses the current scene through its own pause path rather than the
+## engine's, if it has one -- see Gameplay.set_paused() for why.
+func _apply_pause(pause: bool) -> void:
+	var scene := get_tree().current_scene
+	if scene and scene.has_method("set_paused"):
+		scene.set_paused(pause)
 
 
 # ----------------------------------------------------------------------
@@ -158,74 +162,137 @@ func _build() -> void:
 	root.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	add_child(root)
 
-	_check = CheckButton.new()
-	_check.text = "IMU debug"
-	_check.set_anchors_preset(Control.PRESET_TOP_RIGHT)
-	_check.offset_left = -170.0
-	_check.offset_top = 84.0
-	_check.offset_right = -12.0
-	_check.offset_bottom = 116.0
-	_check.modulate = Color(1, 1, 1, 0.65)
-	_check.toggled.connect(_on_toggled)
-	root.add_child(_check)
+	_gear = Button.new()
+	_gear.text = "⚙"          # gear glyph -- no icon asset exists yet
+	_gear.tooltip_text = "Settings"
+	_gear.set_anchors_preset(Control.PRESET_TOP_RIGHT)
+	_gear.offset_left = -52.0
+	_gear.offset_top = 12.0
+	_gear.offset_right = -12.0
+	_gear.offset_bottom = 52.0
+	_gear.add_theme_font_size_override("font_size", 22)
+	_gear.modulate = Color(1, 1, 1, 0.7)
+	_gear.pressed.connect(_toggle)
+	root.add_child(_gear)
 
 	_panel = PanelContainer.new()
-	# Pinned to the right edge and to both top and bottom, so the height it can
-	# use is the window's rather than a number guessed here. The scroll
-	# container inside takes care of the rest.
 	_panel.anchor_left = 1.0
 	_panel.anchor_top = 0.0
 	_panel.anchor_right = 1.0
 	_panel.anchor_bottom = 1.0
-	_panel.offset_left = -430.0
-	_panel.offset_top = 120.0
+	_panel.offset_left = -480.0
+	_panel.offset_top = 60.0
 	_panel.offset_right = -12.0
 	_panel.offset_bottom = -12.0
-	# Grows left, not right. A container cannot be smaller than its contents,
-	# so on a narrow window this would otherwise widen itself off the edge of
-	# the screen -- taking the scrollbar, and half the values, with it.
 	_panel.grow_horizontal = Control.GROW_DIRECTION_BEGIN
 	var style := StyleBoxFlat.new()
 	style.bg_color = Color(0.05, 0.04, 0.09, 0.94)
 	style.border_color = Color(0.55, 0.48, 0.85, 0.7)
 	style.set_border_width_all(1)
 	style.set_corner_radius_all(6)
-	style.set_content_margin_all(10)
+	style.set_content_margin_all(6)
 	_panel.add_theme_stylebox_override("panel", style)
 	root.add_child(_panel)
 
-	_scroll = ScrollContainer.new()
-	var scroll := _scroll     # local alias, for readability below
-	# Only a width is asked for. A minimum height would set a floor the panel
-	# could not go below, which on a short window is the same overflow problem
-	# in the other direction.
-	scroll.custom_minimum_size = Vector2(384, 0)
-	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
-	_panel.add_child(scroll)
+	_tabs = TabContainer.new()
+	_panel.add_child(_tabs)
 
-	var column := VBoxContainer.new()
-	column.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	column.add_theme_constant_override("separation", 4)
-	# See _new_row(): the column would otherwise eat every wheel event that
-	# lands between its children, which is why the list refused to scroll.
-	column.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	scroll.add_child(column)
-
-	_build_link(column)
-	_build_live(column)
-	_build_orientation(column)
-	_build_direction_check(column)
-	_build_sensitivity(column)
-	_build_assist(column)
-	_build_accuracy(column)
-	_build_display(column)
-	_build_storage(column)
+	_build_audio_tab()
+	_build_controllers_tab()
+	_build_gameplay_tab()
+	_build_advanced_tab()      # last: collapsed by default, not the one shown
 
 	_dialog = FileDialog.new()
 	_dialog.access = FileDialog.ACCESS_FILESYSTEM
-	_dialog.add_filter("*.json", "IMU settings")
+	_dialog.add_filter("*.json", "Settings profile")
 	_dialog.size = Vector2i(760, 520)
 	root.add_child(_dialog)
+
+
+## One tab: a scroll container holding a column, with wheel scrolling routed
+## to it from anywhere over the panel -- see _input(). Sliders and rows below
+## set their own mouse filters so the wheel reaches this rather than being
+## quietly swallowed by whatever the pointer happens to be over.
+func _new_tab(title: String) -> VBoxContainer:
+	var scroll := ScrollContainer.new()
+	scroll.name = title
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	_tabs.add_child(scroll)
+
+	var column := VBoxContainer.new()
+	column.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	column.custom_minimum_size = Vector2(420, 0)
+	column.add_theme_constant_override("separation", 4)
+	column.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	scroll.add_child(column)
+	return column
+
+
+func _build_audio_tab() -> void:
+	var column := _new_tab("Audio")
+	_heading(column, "Volume")
+	_note(column, "Applied straight to the audio buses (Master / Music / SFX).")
+	_volume_slider(column, "vol_master", "master")
+	_volume_slider(column, "vol_music", "music")
+	_volume_slider(column, "vol_sfx", "sfx")
+
+
+func _build_controllers_tab() -> void:
+	_controllers_col = _new_tab("Controllers")
+	_heading(_controllers_col, "Boards")
+	_note(_controllers_col, "One section per board. Switching transport reopens "
+		+ "that board's link without restarting the bridge.")
+
+
+func _build_gameplay_tab() -> void:
+	var column := _new_tab("Gameplay")
+	_heading(column, "Timing")
+	_slider(column, "audio_offset_ms", "note delay", -300.0, 300.0, 5.0, false)
+	_note(column, "Milliseconds to shift the chart's audio against the notes. "
+		+ "Same as the [ ] ; ' keys in a song.")
+
+	_heading(column, "Leniency")
+	_slider(column, "lane_tolerance_deg", "aim tolerance", 30.0, 100.0, 1.0, false)
+	_slider(column, "timing_scale", "window stretch", 1.0, 4.0, 0.05, false)
+	_note(column, "Aim tolerance is how far off a lane a flick may point and "
+		+ "still reach the note in it. Window stretch multiplies the timing "
+		+ "windows for flicks alone -- keys and clicks are judged the same as "
+		+ "always.")
+
+	_heading(column, "Profile")
+	_note(column, "A tuning as a file: one per board, or to carry between "
+		+ "machines. Load and Save write every tab here, not just this one.")
+	var row := _new_row(column)
+	var load_button := Button.new()
+	load_button.text = "load..."
+	load_button.pressed.connect(_on_import_pressed)
+	row.add_child(load_button)
+	var save_button := Button.new()
+	save_button.text = "save as..."
+	save_button.pressed.connect(_on_export_pressed)
+	row.add_child(save_button)
+	var defaults := Button.new()
+	defaults.text = "defaults"
+	defaults.pressed.connect(func() -> void:
+		Settings.reset_to_defaults()
+		_profile_note.text = "back to the defaults")
+	row.add_child(defaults)
+	_profile_note = Label.new()
+	_profile_note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_profile_note.add_theme_font_size_override("font_size", 11)
+	column.add_child(_profile_note)
+
+
+func _build_advanced_tab() -> void:
+	var column := _new_tab("Advanced")
+	_build_link(column)
+	_build_live(column)
+	_build_orientation(column)
+	_build_sensitivity(column)
+	_build_accuracy(column)
+	_build_display(column)
+	_build_log(column)
+	_build_storage(column)
 
 
 func _build_link(column: VBoxContainer) -> void:
@@ -239,8 +306,6 @@ func _build_link(column: VBoxContainer) -> void:
 func _build_live(column: VBoxContainer) -> void:
 	_heading(column, "Live")
 	_readout(column, "bearing", "pointing")
-	# A bar rather than a number, because the useful question is not "how many
-	# dps" but "how close to counting", and that is a distance to a line.
 	var bar := ProgressBar.new()
 	bar.max_value = 150.0
 	bar.show_percentage = false
@@ -254,7 +319,9 @@ func _build_live(column: VBoxContainer) -> void:
 func _build_orientation(column: VBoxContainer) -> void:
 	_heading(column, "Orientation")
 	_note(column, "Which board axis points away from you. Wrong here and "
-		+ "flicks land in the wrong lane, or read as rolls and are refused.")
+		+ "flicks land in the wrong lane, or read as rolls and are refused. "
+		+ "The Calibrate button on the Controllers tab also sets this, as "
+		+ "part of a full setup.")
 
 	var row := _new_row(column)
 	var label := Label.new()
@@ -305,219 +372,6 @@ func _build_orientation(column: VBoxContainer) -> void:
 	_slider(column, "sector_offset_deg", "lane offset", 0.0, 60.0, 1.0)
 
 
-## How long a check waits for each flick before giving the board back.
-const CHECK_TIMEOUT_S := 25.0
-
-## Worst per-flick disagreement, in degrees, still called a consistent answer.
-## An eighth of a turn is roughly what a hand throwing four flicks in a hurry
-## produces; past a quarter they are no longer describing one mapping at all.
-const CHECK_TIGHT_DEG := 20.0
-const CHECK_LOOSE_DEG := 45.0
-
-## Rotation small enough not to be worth correcting. Well inside a lane, and
-## inside what a person can aim by hand, so "fixing" it would be fitting the
-## correction to the throw rather than to the board.
-const CHECK_NEGLIGIBLE_DEG := 8.0
-
-
-func _build_direction_check(column: VBoxContainer) -> void:
-	_heading(column, "Direction check")
-	_note(column, "Whether flicks go where you aim them, measured rather than "
-		+ "guessed. Four flicks, one each way. Nothing is scored from them and "
-		+ "the board will not start or play anything while it is running.")
-
-	var row := _new_row(column)
-	_check_start = Button.new()
-	_check_start.text = "start check"
-	_check_start.pressed.connect(_start_check)
-	row.add_child(_check_start)
-	var cancel := Button.new()
-	cancel.text = "cancel"
-	cancel.pressed.connect(func() -> void:
-		if _check_step >= 0:
-			_end_check("cancelled"))
-	row.add_child(cancel)
-	var clear := Button.new()
-	clear.text = "clear correction"
-	clear.pressed.connect(func() -> void:
-		Settings.clear_aim()
-		_check_result.text = ("correction cleared -- bearings are now used exactly "
-			+ "as the board reports them"))
-	row.add_child(clear)
-
-	_check_prompt = Label.new()
-	_check_prompt.add_theme_font_size_override("font_size", 15)
-	_check_prompt.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	column.add_child(_check_prompt)
-
-	_check_result = Label.new()
-	_check_result.add_theme_font_size_override("font_size", 12)
-	_check_result.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	column.add_child(_check_result)
-
-	_check_apply = Button.new()
-	_check_apply.text = "apply this correction"
-	_check_apply.visible = false
-	_check_apply.pressed.connect(func() -> void:
-		Settings.set_aim(_check_offset, _check_flip, _check_hand)
-		_check_apply.visible = false
-		_check_result.text = ("applied. Run the check again to confirm it now "
-			+ "reads straight."))
-	column.add_child(_check_apply)
-
-	_readout(column, "aim", "correction")
-
-
-func _start_check() -> void:
-	_check_step = 0
-	_check_samples.clear()
-	_check_apply.visible = false
-	_check_result.text = ""
-	# The board stops being a controller for the duration. Without this the very
-	# first flick would do whatever the screen behind the panel does with one --
-	# on the title screen that is "start the game", which ends the check by
-	# navigating away from the panel running it.
-	ImuInput.capture_only = true
-	_prompt_check()
-
-
-func _prompt_check() -> void:
-	_capture_deadline = Time.get_ticks_msec() * 0.001 + CHECK_TIMEOUT_S
-	var want: Array = LEARN_DIRECTIONS[_check_step]
-	_check_prompt.text = "flick %s  (%d of %d)" % [
-		String(want[0]).to_upper(), _check_step + 1, LEARN_DIRECTIONS.size()]
-
-
-func _end_check(why: String) -> void:
-	_check_step = -1
-	_capture_deadline = -1.0
-	ImuInput.capture_only = false
-	_check_prompt.text = ""
-	if why != "":
-		_check_result.text = why
-
-
-func _on_check_flick(record: Dictionary) -> void:
-	if _check_step < 0 or not record.has("bearing"):
-		return
-	var flick_hand := String(record.get("hand", ""))
-	if _check_samples.is_empty():
-		_check_hand = flick_hand
-	elif flick_hand != _check_hand:
-		# Both boards are live and the other one was flicked. Ignoring it is the
-		# only safe answer: a run mixing two mountings solves for a correction
-		# that is wrong for both, and it would look like a board that cannot aim
-		# rather than like two boards being used at once.
-		return
-	_check_samples.append({
-		"name": String(LEARN_DIRECTIONS[_check_step][0]),
-		"expect": float(LEARN_DIRECTIONS[_check_step][1]),
-		# The raw bearing, before whatever correction is already in force. The
-		# check solves for the whole correction from scratch, so that running it
-		# twice confirms an answer instead of stacking a second one on top.
-		"got": float(record["bearing"]),
-	})
-	_check_step += 1
-	if _check_step < LEARN_DIRECTIONS.size():
-		_prompt_check()
-		return
-	_finish_check()
-
-
-## Fit one correction to every flick collected: which single rotation, with or
-## without a mirror, best explains all four at once.
-##
-## `spread` is the worst any one flick disagrees with that fit, and it is the
-## number that decides whether the answer means anything. A tight spread with a
-## large offset is a board held at an angle -- fixable, and exactly what this
-## screen is for. A wide spread is four flicks that do not describe one mapping
-## at all, and no offset would fix it: that is a wrong front axis, or four
-## flicks thrown too lazily to have a direction.
-func _fit_check(flip: bool) -> Dictionary:
-	# Averaged as vectors rather than as numbers, because these are angles: the
-	# mean of 350 and 10 is 0, and arithmetic makes it 180.
-	var sx: float = 0.0
-	var sy: float = 0.0
-	for sample in _check_samples:
-		var error: float = _sample_error(sample, flip, 0.0)
-		sx += cos(error)
-		sy += sin(error)
-	var mean: float = atan2(sy, sx)
-	var spread: float = 0.0
-	for sample in _check_samples:
-		spread = maxf(spread, absf(angle_difference(
-			mean, _sample_error(sample, flip, 0.0))))
-	return {
-		"offset": fposmod(rad_to_deg(mean), 360.0),
-		"spread": rad_to_deg(spread),
-	}
-
-
-## How far a flick landed from where it was aimed, in radians, once `flip` and
-## `offset_deg` have been applied to it. Zero means the correction under test
-## puts that flick exactly where the player said they were throwing it.
-func _sample_error(sample: Dictionary, flip: bool, offset_deg: float) -> float:
-	var measured: float = float(sample["got"])
-	if flip:
-		measured = -measured
-	return angle_difference(deg_to_rad(measured + offset_deg),
-		deg_to_rad(float(sample["expect"])))
-
-
-func _finish_check() -> void:
-	var direct: Dictionary = _fit_check(false)
-	var mirrored: Dictionary = _fit_check(true)
-	# The mirror has to explain the flicks *better*, not merely explain them. A
-	# rotation is the ordinary fault and a reflection is the surprising one, so
-	# it has to earn being named -- and with four flicks the two fits are never
-	# far apart by chance.
-	var best: Dictionary = direct
-	_check_flip = false
-	if float(mirrored["spread"]) < float(direct["spread"]) - 5.0:
-		best = mirrored
-		_check_flip = true
-	_check_offset = float(best["offset"])
-	var spread: float = float(best["spread"])
-	# Signed, so it can be said as a direction rather than as a number.
-	var turn: float = rad_to_deg(angle_difference(0.0, deg_to_rad(_check_offset)))
-
-	var lines: PackedStringArray = []
-	for sample in _check_samples:
-		lines.append("%s: aimed %.0f, read %.0f  (%+.0f off)" % [
-			String(sample["name"]), float(sample["expect"]),
-			float(sample["got"]),
-			-rad_to_deg(_sample_error(sample, false, 0.0))])
-
-	var verdict: String = ""
-	if spread > CHECK_LOOSE_DEG:
-		verdict = ("These four do not agree with each other -- one is %.0f deg "
-			+ "from the best fit -- so no single correction can fix them. That "
-			+ "is almost always the front axis: use \"learn from my next "
-			+ "flick\" above, then run this again. If it persists, throw them "
-			+ "harder; a lazy flick has no clear direction to read.") % spread
-		_check_apply.visible = false
-	elif _check_flip:
-		verdict = ("Left and right are mirrored, and the ring is turned %.0f "
-			+ "deg on top of that. A rotation alone cannot undo a mirror, "
-			+ "which is exactly why this is worth measuring.") % absf(turn)
-		_check_apply.visible = true
-	elif absf(turn) <= CHECK_NEGLIGIBLE_DEG:
-		verdict = ("Directions are right: off by %.0f deg, which is inside what "
-			+ "a hand can aim. Nothing to fix.") % absf(turn)
-		_check_apply.visible = false
-	else:
-		verdict = ("Flicks land %.0f deg %s of where you aim them, and do it "
-			+ "consistently. Applying this turns every bearing back.") % [
-			absf(turn), "anticlockwise" if turn > 0.0 else "clockwise"]
-		_check_apply.visible = true
-	if spread > CHECK_TIGHT_DEG and spread <= CHECK_LOOSE_DEG:
-		verdict += (" The four disagree by up to %.0f deg, so this is a rough "
-			+ "fit -- worth running once more.") % spread
-
-	_check_result.text = "\n".join(lines) + "\n\n" + verdict
-	_end_check("")
-
-
 func _build_sensitivity(column: VBoxContainer) -> void:
 	_heading(column, "Sensitivity")
 	_note(column, "How hard a movement has to be, and how clean, before it "
@@ -527,39 +381,16 @@ func _build_sensitivity(column: VBoxContainer) -> void:
 	_slider(column, "min_margin", "lane margin", 0.0, 0.4, 0.01)
 	_slider(column, "refractory_ms", "refractory", 60.0, 500.0, 10.0)
 	_note(column, "These start almost all the way down: reaching the threshold "
-		+ "is very nearly the whole test, and the swing floor only still "
-		+ "rejects a movement that is essentially a roll, which has no "
-		+ "direction to report. Raise the threshold if stray movements "
+		+ "is very nearly the whole test. Raise it if stray movements "
 		+ "register, and the refractory if the return stroke fires a second "
 		+ "flick the opposite way.")
 
 	_heading(column, "Latency")
-	_note(column, "A flick cannot be named until enough of it has happened. "
-		+ "This is how much of it is enough.")
 	_slider(column, "commit_fraction", "report at", 0.2, 0.9, 0.05)
 	_note(column, "The bridge stops measuring once the rotation has fallen to "
-		+ "this fraction of its own peak, and sends the flick then. Higher "
-		+ "reports sooner off less of the movement; lower waits for the whole "
-		+ "swing to die away, which is where this used to sit and is worth "
-		+ "about twice the delay. It does not change scoring -- every flick "
-		+ "carries how late it was and the game reaches back by exactly that "
-		+ "-- so what this moves is how quickly the screen answers you.")
-
-
-func _build_assist(column: VBoxContainer) -> void:
-	_heading(column, "Leniency")
-	_note(column, "How generously a flick that did register is matched to a "
-		+ "note. Nothing here is sent to the bridge -- it is scoring, and only "
-		+ "the game knows where the notes are.")
-	_slider(column, "lane_tolerance_deg", "aim tolerance", 30.0, 100.0, 1.0, false)
-	_slider(column, "timing_scale", "window stretch", 1.0, 4.0, 0.05, false)
-	_note(column, "Aim tolerance is how far off a lane a flick may point and "
-		+ "still reach the note in it; 30 is strict, so only ever the nearest "
-		+ "lane, and the default 75 reaches past it either side. Window "
-		+ "stretch multiplies the hit windows for flicks alone -- keys and "
-		+ "clicks are judged the same as always. If flicks are landing in the "
-		+ "wrong lane rather than merely missing, the direction check above is "
-		+ "the fix; leniency only widens what a correct direction can reach.")
+		+ "this fraction of its own peak. Higher reports sooner off less of "
+		+ "the movement; it does not change scoring, only how quickly the "
+		+ "screen answers.")
 
 
 func _build_accuracy(column: VBoxContainer) -> void:
@@ -624,8 +455,7 @@ func _build_display(column: VBoxContainer) -> void:
 	column.add_child(only_hits)
 	_rows["hits_box"] = only_hits
 	_note(column, "With this on, colour means one thing only: that flick hit "
-		+ "a note. Everything else -- the live arrow, refusals, flicks that "
-		+ "hit nothing -- stays grey.")
+		+ "a note. Everything else stays grey.")
 
 	var only_arrows := CheckBox.new()
 	only_arrows.text = "draw detected flicks only  (O)"
@@ -636,12 +466,23 @@ func _build_display(column: VBoxContainer) -> void:
 		Settings.changed.emit())
 	column.add_child(only_arrows)
 	_rows["only_arrows_box"] = only_arrows
-	_note(column, "A different question from the rule above. That one is about "
-		+ "scoring; this is about detection -- with it on, the ring stays empty "
-		+ "until a swing is strong and clean enough to be sent as a flick, and "
-		+ "then shows that flick whether or not there was a note there. No "
-		+ "live arrow following the board, no rest dot, no refusal mark.")
+	_note(column, "A different question from the rule above. That one is "
+		+ "about scoring; this is about detection -- with it on, the ring "
+		+ "stays empty until a swing is strong and clean enough to be sent "
+		+ "as a flick.")
 	_readout(column, "hit_rate", "flicks on notes")
+
+
+func _build_log(column: VBoxContainer) -> void:
+	_heading(column, "Raw record log")
+	_note(column, "Every flick and refusal, most recent first -- the same "
+		+ "thing the bridge prints to its own console with -v.")
+	_log_view = RichTextLabel.new()
+	_log_view.custom_minimum_size = Vector2(0, 160)
+	_log_view.scroll_active = true
+	_log_view.bbcode_enabled = true
+	_log_view.add_theme_font_size_override("normal_font_size", 11)
+	column.add_child(_log_view)
 
 
 func _build_storage(column: VBoxContainer) -> void:
@@ -665,13 +506,6 @@ func _build_storage(column: VBoxContainer) -> void:
 	import_button.pressed.connect(_on_import_pressed)
 	row.add_child(import_button)
 
-	var defaults := Button.new()
-	defaults.text = "defaults"
-	defaults.pressed.connect(func() -> void:
-		Settings.reset_to_defaults()
-		_file_note.text = "back to the defaults")
-	row.add_child(defaults)
-
 	_file_note = Label.new()
 	_file_note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	_file_note.add_theme_font_size_override("font_size", 11)
@@ -683,13 +517,7 @@ func _build_storage(column: VBoxContainer) -> void:
 # Small builders
 # ----------------------------------------------------------------------
 func _new_row(parent: Node) -> HBoxContainer:
-	## A row that does not swallow the mouse wheel.
-	##
-	## Containers inherit Control's default of MOUSE_FILTER_STOP, so a plain
-	## HBoxContainer consumes wheel events that land on it and the scroll
-	## container behind never sees them -- which is most of the panel's area,
-	## since it is the gaps between and around the controls. Ignoring the mouse
-	## here costs nothing: the controls inside still receive their own events.
+	## A row that does not swallow the mouse wheel -- see _new_tab().
 	var row := HBoxContainer.new()
 	row.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	parent.add_child(row)
@@ -752,15 +580,8 @@ func _slider(column: VBoxContainer, key: String, caption: String,
 	slider.max_value = high
 	slider.step = step
 	# The wheel scrolls the panel, it does not edit whatever happens to be
-	# under the pointer. A slider that changes on scroll means running the list
-	# past a control silently retunes the board, and the change is applied
-	# before there is any way to notice it happened.
+	# under the pointer -- see _new_tab().
 	slider.scrollable = false
-	# ...and PASS so the wheel carries on to the ScrollContainer behind it.
-	# Without this the slider merely swallows the event: safe, but the list
-	# refuses to scroll wherever the pointer happens to be over a control,
-	# which feels broken in a different way. Dragging still works, because the
-	# slider accepts button events and only declines the wheel.
 	slider.mouse_filter = Control.MOUSE_FILTER_PASS
 	slider.value = Settings.get(key)
 	slider.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -784,6 +605,39 @@ func _slider(column: VBoxContainer, key: String, caption: String,
 	_sliders[key] = slider
 
 
+## A 0..1 slider over an audio() key, shown as a percentage.
+func _volume_slider(column: VBoxContainer, key: String, caption: String) -> void:
+	var row := _new_row(column)
+	var name_label := Label.new()
+	name_label.text = caption
+	name_label.custom_minimum_size = Vector2(110, 0)
+	name_label.add_theme_font_size_override("font_size", 12)
+	row.add_child(name_label)
+
+	var slider := HSlider.new()
+	slider.min_value = 0.0
+	slider.max_value = 1.0
+	slider.step = 0.01
+	slider.scrollable = false
+	slider.mouse_filter = Control.MOUSE_FILTER_PASS
+	slider.value = Settings.get(key)
+	slider.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	slider.custom_minimum_size = Vector2(150, 0)
+	row.add_child(slider)
+
+	var value := Label.new()
+	value.custom_minimum_size = Vector2(48, 0)
+	value.add_theme_font_size_override("font_size", 12)
+	value.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	row.add_child(value)
+
+	slider.value_changed.connect(func(v: float) -> void:
+		Settings.set_audio(key, v)
+		value.text = "%d%%" % roundi(v * 100.0))
+	value.text = "%d%%" % roundi(slider.value * 100.0)
+	_sliders[key] = slider
+
+
 func _format_value(key: String, value: float) -> String:
 	if key.ends_with("_dps") or key.ends_with("_ms") or key.ends_with("_deg"):
 		return "%.0f" % value
@@ -791,16 +645,114 @@ func _format_value(key: String, value: float) -> String:
 
 
 # ----------------------------------------------------------------------
+# Controllers tab: rebuilt when the set of boards changes
+# ----------------------------------------------------------------------
+func _refresh_controllers_tab() -> void:
+	var hands: Array = ImuInput.active_hands()
+	if hands == _known_hands:
+		_update_controller_rows(hands)
+		return
+	_known_hands = hands.duplicate()
+	for child in _controllers_col.get_children():
+		child.queue_free()
+	_controller_rows.clear()
+	_heading(_controllers_col, "Boards")
+	_note(_controllers_col, "One section per board. Switching transport "
+		+ "reopens that board's link without restarting the bridge.")
+	for hand in hands:
+		_build_controller_section(hand)
+	_update_controller_rows(hands)
+
+
+func _build_controller_section(hand: String) -> void:
+	var who: String = ImuInput.hand_label(hand).capitalize()
+	_heading(_controllers_col, who)
+
+	var board_label := Label.new()
+	board_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	board_label.add_theme_font_size_override("font_size", 12)
+	_controllers_col.add_child(board_label)
+
+	var wire_row := _new_row(_controllers_col)
+	var wire_name := Label.new()
+	wire_name.text = "wire_ms"
+	wire_name.custom_minimum_size = Vector2(80, 0)
+	wire_name.add_theme_font_size_override("font_size", 12)
+	wire_name.modulate = Color(1, 1, 1, 0.5)
+	wire_row.add_child(wire_name)
+	var wire_value := Label.new()
+	wire_value.add_theme_font_size_override("font_size", 12)
+	wire_row.add_child(wire_value)
+
+	var transport_row := _new_row(_controllers_col)
+	var host_edit := LineEdit.new()
+	host_edit.placeholder_text = "IP for WiFi, e.g. 192.168.1.50"
+	host_edit.custom_minimum_size = Vector2(180, 0)
+	host_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	transport_row.add_child(host_edit)
+	var usb_button := Button.new()
+	usb_button.text = "USB"
+	usb_button.pressed.connect(func() -> void:
+		Settings.switch_transport(hand))
+	transport_row.add_child(usb_button)
+	var wifi_button := Button.new()
+	wifi_button.text = "WiFi"
+	wifi_button.pressed.connect(func() -> void:
+		if host_edit.text.strip_edges() != "":
+			Settings.switch_transport(hand, host_edit.text.strip_edges()))
+	transport_row.add_child(wifi_button)
+
+	var cal_row := _new_row(_controllers_col)
+	var calibrate := Button.new()
+	calibrate.text = "calibrate..."
+	calibrate.pressed.connect(func() -> void:
+		_open_calibration_wizard(hand))
+	cal_row.add_child(calibrate)
+
+	_controller_rows[hand] = {"board": board_label, "wire": wire_value}
+
+
+func _update_controller_rows(hands: Array) -> void:
+	for hand in hands:
+		var rows: Dictionary = _controller_rows.get(hand, {})
+		if rows.is_empty():
+			continue
+		var state: Dictionary = ImuInput.state_of(hand)
+		var board_label: Label = rows["board"]
+		if not ImuInput.hand_connected(hand):
+			board_label.text = "GONE -- " + String(state.get("status", ""))
+			board_label.modulate = Color(1.0, 0.8, 0.45)
+		elif bool(state.get("stalled", false)):
+			board_label.text = "FROZEN -- replug it"
+			board_label.modulate = Color(1.0, 0.55, 0.55)
+		elif ImuInput.hand_rate_hz(hand) < 1.0:
+			board_label.text = "open, no samples"
+			board_label.modulate = Color(1.0, 0.8, 0.45)
+		else:
+			board_label.text = "%s   %.0f Hz" % [
+				String(state.get("transport", "?")), ImuInput.hand_rate_hz(hand)]
+			board_label.modulate = Color(0.75, 0.85, 1.0)
+		var wire_value: Label = rows["wire"]
+		wire_value.text = "%.1f ms" % float(state.get("wire_ms", 0.0))
+
+
+## Opens the in-game calibration wizard for one board, if it exists yet.
+## Wired up in full once CalibrationWizard.tscn lands; a missing scene here
+## fails quietly rather than with a broken-path error, since this button can
+## be built before that scene exists.
+func _open_calibration_wizard(hand: String) -> void:
+	if not ResourceLoader.exists("res://scenes/CalibrationWizard.tscn"):
+		push_warning("[settings] calibration wizard is not built yet")
+		return
+	var scene: PackedScene = load("res://scenes/CalibrationWizard.tscn")
+	var wizard: Node = scene.instantiate()
+	wizard.hand = hand
+	get_tree().current_scene.add_child(wizard)
+
+
+# ----------------------------------------------------------------------
 # Reacting
 # ----------------------------------------------------------------------
-func _on_toggled(pressed: bool) -> void:
-	_panel.visible = pressed
-	Settings.panel_open = pressed
-	Settings.save_settings()
-	if pressed:
-		Settings.request_config()
-
-
 func _queue_push() -> void:
 	_push_in = PUSH_DELAY
 
@@ -816,10 +768,12 @@ func _refresh_controls() -> void:
 		var value: float = float(Settings.get(key))
 		if not is_equal_approx(slider.value, value):
 			slider.set_value_no_signal(value)
-			# The label is not driven by the signal that was just skipped.
 			var row := slider.get_parent()
 			var label: Label = row.get_child(row.get_child_count() - 1)
-			label.text = _format_value(key, value)
+			if key.begins_with("vol_"):
+				label.text = "%d%%" % roundi(value * 100.0)
+			else:
+				label.text = _format_value(key, value)
 	if _rows.has("calibrated_box"):
 		_rows["calibrated_box"].set_pressed_no_signal(Settings.calibrated)
 	if _rows.has("arrow_box"):
@@ -834,19 +788,10 @@ func _refresh_readouts() -> void:
 	_set_row("bridge", ImuInput.status_text if ImuInput.link_up
 		else "no bridge on :%d" % ImuInput.port,
 		Color(0.6, 1.0, 0.7) if ImuInput.link_up else Color(1.0, 0.7, 0.7))
-	# Three states, because "the port is open" and "the board is sending" are
-	# not the same thing and the difference is invisible everywhere else: a
-	# port that opens and then delivers nothing reports a happy link and no
-	# flicks, for ever.
 	if ImuInput.two_handed():
-		# Two boards are two of every one of these, and the interesting case is
-		# always the one where they disagree -- so they are shown side by side
-		# rather than folded into a number that describes neither.
 		_refresh_two_board_readouts()
 		_set_row("hit_rate", "%d hit   %d hit nothing" % [
 			_lane_hits, _lane_misses], Color(1, 1, 1, 0.7))
-		_refresh_aim_readout()
-		_refresh_bias_readout()
 		return
 	if ImuInput.transport == "demo":
 		_set_row("board", "demo mode -- made-up flicks, no board",
@@ -856,13 +801,13 @@ func _refresh_readouts() -> void:
 			Color(1.0, 0.8, 0.45))
 	elif ImuInput.board_stalled:
 		_set_row("board", "FROZEN: streaming, but the readings never change. "
-			+ "Unplug the cable and plug it back in -- a reset leaves the "
-			+ "sensor powered and holding its state.", Color(1.0, 0.55, 0.55))
+			+ "Unplug the cable and plug it back in.", Color(1.0, 0.55, 0.55))
 	elif ImuInput.board_rate_hz < 1.0:
-		_set_row("board", "port open, but no samples -- the board is not "
-			+ "streaming (try replugging it)", Color(1.0, 0.8, 0.45))
+		_set_row("board", "port open, but no samples -- try replugging it",
+			Color(1.0, 0.8, 0.45))
 	else:
-		_set_row("board", "%.0f Hz" % ImuInput.board_rate_hz,
+		_set_row("board", "%.0f Hz  (wire %.1f ms)" % [
+			ImuInput.board_rate_hz, ImuInput.board_wire_ms],
 			Color(0.75, 0.85, 1.0))
 
 	var lost := ImuInput.dropped_count()
@@ -898,18 +843,11 @@ func _refresh_readouts() -> void:
 
 	_set_row("hit_rate", "%d hit   %d hit nothing" % [_lane_hits, _lane_misses],
 		Color(1, 1, 1, 0.7))
-	_refresh_aim_readout()
-	_refresh_bias_readout()
 
 
-## The Link and Live rows, one board's worth of each, side by side.
-##
-## Every row here answers a question about a particular board -- is it there,
-## how fast is it being swung, what did it last refuse -- and with two boards
-## the answers differ. A single set of numbers taken from whichever board spoke
-## last is the one display that can be wrong while looking right, and it is
-## wrong exactly when somebody is using this panel to find out why half the
-## chart is not scoring.
+## The Link and Live rows, one board's worth of each, side by side -- with two
+## boards the answers differ per board, and folding them into one set of
+## numbers is the one display that can be wrong while looking right.
 func _refresh_two_board_readouts() -> void:
 	var board_parts: PackedStringArray = []
 	var count_parts: PackedStringArray = []
@@ -962,8 +900,7 @@ func _refresh_two_board_readouts() -> void:
 		if is_nan(float(state["bearing"])):
 			flick_parts.append("%s none yet" % who)
 		else:
-			var went: float = ImuInput.game_angle_of(
-				float(state["bearing"]), hand)
+			var went: float = ImuInput.game_angle_of(float(state["bearing"]), hand)
 			flick_parts.append("%s lane %d  str %.2f  lag %.0f ms" % [
 				who, _lane_of(went), float(state["strength"]),
 				float(state["lag_ms"])])
@@ -975,46 +912,9 @@ func _refresh_two_board_readouts() -> void:
 	_set_row("swing", "   ".join(swing_parts), Color(1, 1, 1, 0.7))
 	_set_row("flick", "   ".join(flick_parts), Color(1, 1, 1, 0.85))
 
-	# One bar and two boards: it follows whichever is being swung hardest,
-	# which is the one the player is asking about when they look at it.
 	var bar: ProgressBar = _rows["swing_bar"]
 	bar.max_value = peak_threshold
 	bar.value = minf(peak_swing, peak_threshold)
-
-
-func _refresh_aim_readout() -> void:
-	# One line per board. With two of them the corrections are different
-	# numbers for different mountings, and showing only one would be showing an
-	# adjustment that half the flicks on screen are not getting.
-	var aim_hands: Array = ImuInput.hands if ImuInput.two_handed() else [""]
-	var aim_parts: PackedStringArray = []
-	for aim_hand in aim_hands:
-		var prefix: String = ""
-		if aim_hand != "":
-			prefix = ("blue " if String(aim_hand) == "left" else "pink ")
-		if not Settings.aim_corrected(aim_hand):
-			aim_parts.append(prefix + "none")
-		else:
-			var turn: float = rad_to_deg(angle_difference(
-				0.0, deg_to_rad(Settings.aim_offset(aim_hand))))
-			aim_parts.append("%s%s%+.0f deg" % [prefix,
-				"mirrored, " if Settings.aim_flip(aim_hand) else "", turn])
-	var any_correction: bool = false
-	for aim_hand in aim_hands:
-		any_correction = any_correction or Settings.aim_corrected(aim_hand)
-	if not any_correction:
-		_set_row("aim", "none -- bearings used as reported", Color(1, 1, 1, 0.5))
-	else:
-		_set_row("aim", "   ".join(aim_parts), Color(0.75, 0.95, 1.0))
-
-
-func _refresh_bias_readout() -> void:
-	if ImuInput.board_gyro_bias.size() == 3:
-		_set_row("stored_bias", "%+.3f  %+.3f  %+.3f dps" % [
-			float(ImuInput.board_gyro_bias[0]), float(ImuInput.board_gyro_bias[1]),
-			float(ImuInput.board_gyro_bias[2])], Color(1, 1, 1, 0.7))
-	else:
-		_set_row("stored_bias", "not read yet", Color(1, 1, 1, 0.4))
 
 
 func _set_row(key: String, text: String, colour: Color) -> void:
@@ -1079,24 +979,62 @@ func _on_bias_written(record: Dictionary) -> void:
 
 
 # ----------------------------------------------------------------------
+# Raw record log
+# ----------------------------------------------------------------------
+func _on_flick_logged(record: Dictionary) -> void:
+	var hand := String(record.get("hand", ""))
+	_append_log("[color=#a8ffb0]flick[/color] %s bearing %.0f  strength %.2f" % [
+		"[%s] " % hand if hand != "" else "",
+		float(record.get("bearing", 0.0)), float(record.get("strength", 0.0))])
+
+
+func _on_refusal_logged(record: Dictionary) -> void:
+	var hand := String(record.get("hand", ""))
+	_append_log("[color=#ffb0b0]refused[/color] %s%s" % [
+		"[%s] " % hand if hand != "" else "",
+		String(record.get("detail", record.get("reason", "")))])
+
+
+func _append_log(line: String) -> void:
+	if _log_view == null:
+		return
+	_log_view.append_text(line + "\n")
+	# Trim from the top rather than letting the buffer grow for the life of
+	# the process -- this is a live diagnostic view, not a transcript.
+	var lines := _log_view.get_parsed_text().split("\n")
+	if lines.size() > LOG_LINES:
+		_log_view.clear()
+		# get_parsed_text() strips bbcode, so the trimmed re-append loses
+		# colour on old lines -- acceptable, since only the newest lines
+		# (colour intact, appended after this) are what anyone is reading.
+		for kept in lines.slice(lines.size() - LOG_LINES, lines.size()):
+			_log_view.append_text(kept + "\n")
+
+
+# ----------------------------------------------------------------------
 # Files
 # ----------------------------------------------------------------------
 func _on_export_pressed() -> void:
-	_open_dialog(FileDialog.FILE_MODE_SAVE_FILE, "imu_settings.json",
+	_open_dialog(FileDialog.FILE_MODE_SAVE_FILE, "settings_profile.json",
 		func(path: String) -> void:
 			var problem := Settings.export_to(path)
-			_file_note.text = problem if problem != "" else "exported to " + path)
+			var note := problem if problem != "" else "exported to " + path
+			_file_note.text = note
+			_profile_note.text = note)
 
 
 func _on_import_pressed() -> void:
 	_open_dialog(FileDialog.FILE_MODE_OPEN_FILE, "",
 		func(path: String) -> void:
 			var problem := Settings.import_from(path)
+			var note: String
 			if problem != "":
-				_file_note.text = problem
-				return
-			_file_note.text = "imported " + path.get_file() + " and sent it to the bridge"
-			_refresh_controls())
+				note = problem
+			else:
+				note = "imported " + path.get_file() + " and sent it to the bridge"
+				_refresh_controls()
+			_file_note.text = note
+			_profile_note.text = note)
 
 
 func _open_dialog(mode: int, suggested: String, then: Callable) -> void:
@@ -1106,8 +1044,8 @@ func _open_dialog(mode: int, suggested: String, then: Callable) -> void:
 	for connection in _dialog.file_selected.get_connections():
 		_dialog.file_selected.disconnect(connection["callable"])
 	_dialog.file_mode = mode
-	_dialog.title = "Export IMU settings" if mode == FileDialog.FILE_MODE_SAVE_FILE \
-		else "Import IMU settings"
+	_dialog.title = "Export settings" if mode == FileDialog.FILE_MODE_SAVE_FILE \
+		else "Import settings"
 	if suggested != "":
 		_dialog.current_file = suggested
 	_dialog.file_selected.connect(then)

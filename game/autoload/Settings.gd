@@ -407,18 +407,39 @@ func _send(message: Dictionary) -> void:
 	## started with, and the panel would be showing one board's settings while
 	## half the flicks on screen came from the other.
 	##
-	## The board-specific setting, the front axis, is the exception and is
-	## handled in `push_front_to`: it is a fact about how one board is mounted,
-	## and sending it to both is how the second board ends up being told the
-	## first one's mounting.
-	var payload := JSON.stringify(message).to_utf8_buffer()
+	## Anything that is a fact about *one* board rather than about detection in
+	## general -- the front axis, switching its transport, running its
+	## calibration -- goes through `send_to_hand()` instead.
 	for port in control_ports():
-		if port != _connected_port:
-			_socket.close()
-			if _socket.connect_to_host("127.0.0.1", port) != OK:
-				continue
-			_connected_port = port
-		_socket.put_packet(payload)
+		_send_to_port(port, message)
+
+
+## Send to one board's control port only. Sending a transport switch or a
+## calibration command to every bridge would be telling the second board to
+## do what the first one was just asked to.
+func send_to_hand(hand: String, message: Dictionary) -> void:
+	_send_to_port(int(_hand_ports.get(hand, control_port())), message)
+
+
+func _send_to_port(port: int, message: Dictionary) -> void:
+	if port != _connected_port:
+		_socket.close()
+		if _socket.connect_to_host("127.0.0.1", port) != OK:
+			return
+		_connected_port = port
+	_socket.put_packet(JSON.stringify(message).to_utf8_buffer())
+
+
+## Ask one board to reopen on a different transport, live -- the Controllers
+## tab's USB/WiFi toggle. Leave `host` empty to go back to USB (the bridge
+## auto-finds the port); set it (with `udp_port` if not the board's default)
+## to move to WiFi.
+func switch_transport(hand: String, host: String = "", udp_port: int = 3333) -> void:
+	var message := {"cmd": Wire.CMD_TRANSPORT}
+	if host != "":
+		message["host"] = host
+		message["udp_port"] = udp_port
+	send_to_hand(hand, message)
 
 
 ## Every bridge control port the game has heard from, lowest first.
@@ -445,6 +466,10 @@ func control_port() -> int:
 ## Control ports seen in `config` records, as a set. One entry per board.
 var _control_ports: Dictionary = {}
 
+## Control port for each hand that has announced itself, keyed by hand
+## ("" for a single untagged board). What `send_to_hand()` reaches for.
+var _hand_ports: Dictionary = {}
+
 
 func note_bridge_config(record: Dictionary) -> void:
 	## Take what the bridge says it is running as the truth.
@@ -456,7 +481,9 @@ func note_bridge_config(record: Dictionary) -> void:
 	## to remove.
 	applied = record.duplicate()
 	if record.has("control_port"):
-		_control_ports[int(record["control_port"])] = true
+		var port := int(record["control_port"])
+		_control_ports[port] = true
+		_hand_ports[String(record.get("hand", ""))] = port
 	# The front axis is a property of one board's mounting, so with two boards
 	# it must not be adopted from whichever of them spoke last -- that would
 	# hand the second board's mounting to the first every time it reconnected.

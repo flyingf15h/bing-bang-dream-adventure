@@ -40,9 +40,6 @@ func _ready() -> void:
 	# means reaching for the mouse first.
 	TapInputBus.tap.connect(_on_tap)
 	_build_imu_label()
-	# Also here, not only in game: setting the front axis and the thresholds is
-	# something you do before playing, and doing it here costs no notes.
-	add_child(preload("res://scripts/ImuDebugPanel.gd").new())
 
 	_play_intro()
 
