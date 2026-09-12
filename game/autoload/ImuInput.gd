@@ -276,6 +276,10 @@ func _handle_datagram(text: String) -> void:
 			Settings.bias_written.emit(record)
 		Wire.TYPE_BOARD_CAL:
 			board_gyro_bias = record.get("gyro_bias", board_gyro_bias)
+		Wire.TYPE_CAL_STATE:
+			Settings.cal_state_received.emit(record)
+		Wire.TYPE_CAL_DONE:
+			Settings.cal_done_received.emit(record)
 		Wire.TYPE_TRANSPORT:
 			_handle_transport(record)
 		Wire.TYPE_HELLO:

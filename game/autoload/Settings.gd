@@ -44,6 +44,12 @@ signal front_suggested(record: Dictionary)
 signal rest_measured(record: Dictionary)
 signal bias_written(record: Dictionary)
 
+## Emitted for a running calibration sequence (bbda/calseq.py), carrying the
+## bridge's cal_state/cal_done record verbatim -- CalibrationWizard is a thin
+## renderer over these, not a second place step logic could live.
+signal cal_state_received(record: Dictionary)
+signal cal_done_received(record: Dictionary)
+
 const SAVE_PATH := "user://imu_settings.cfg"
 
 ## Bumped if the meaning of a stored value ever changes. An older file is read
@@ -382,19 +388,41 @@ func request_config() -> void:
 	_send({"cmd": Wire.CMD_GET})
 
 
-## Ask the bridge to watch the next flick and say which front axis would put it
-## where the player says they aimed. `expect_bearing` is degrees clockwise from
-## up, the convention a person naming a direction uses: 0 up, 90 right.
-func learn_front(expect_bearing: float) -> void:
-	_send({"cmd": Wire.CMD_LEARN_FRONT, "expect_bearing": expect_bearing})
+## Ask one board to watch the next flick and say which front axis would put
+## it where the player says they aimed. `expect_bearing` is degrees clockwise
+## from up, the convention a person naming a direction uses: 0 up, 90 right.
+##
+## Per-hand, like every command below it here: the front axis is a fact
+## about one board's mounting, and arming both at once means whichever board
+## gets flicked next answers for both of them.
+func learn_front(expect_bearing: float, hand: String = "") -> void:
+	send_to_hand(hand, {"cmd": Wire.CMD_LEARN_FRONT, "expect_bearing": expect_bearing})
 
 
-func measure_rest(seconds: float = 2.0) -> void:
-	_send({"cmd": Wire.CMD_MEASURE_REST, "seconds": seconds})
+func measure_rest(seconds: float = 2.0, hand: String = "") -> void:
+	send_to_hand(hand, {"cmd": Wire.CMD_MEASURE_REST, "seconds": seconds})
 
 
-func write_bias() -> void:
-	_send({"cmd": Wire.CMD_WRITE_BIAS})
+func write_bias(hand: String = "") -> void:
+	send_to_hand(hand, {"cmd": Wire.CMD_WRITE_BIAS})
+
+
+## --- calibration sequence (bbda/calseq.py) ----------------------------------
+
+func cal_start(hand: String, kind: String = "full") -> void:
+	send_to_hand(hand, {"cmd": Wire.CMD_CAL_START, "kind": kind})
+
+
+func cal_advance(hand: String) -> void:
+	send_to_hand(hand, {"cmd": Wire.CMD_CAL_ADVANCE})
+
+
+func cal_cancel(hand: String) -> void:
+	send_to_hand(hand, {"cmd": Wire.CMD_CAL_CANCEL})
+
+
+func cal_save(hand: String) -> void:
+	send_to_hand(hand, {"cmd": Wire.CMD_CAL_SAVE})
 
 
 func _send(message: Dictionary) -> void:
