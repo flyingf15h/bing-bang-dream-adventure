@@ -1,7 +1,7 @@
 extends Node
 ## Receives IMU flicks from the host-side bridge and feeds them to TapInputBus.
 ##
-## The bridge (dashboard/game_bridge.py) talks to the board over USB serial or
+## The bridge (bridge/run_bridge.py) talks to the board over USB serial or
 ## over WiFi, runs the flick detector, and posts one JSON datagram per flick to
 ## this port. Godot only ever sees UDP on localhost, which is deliberate:
 ##
@@ -9,13 +9,15 @@ extends Node
 ##     through a GDExtension binary built per platform. The bridge is what
 ##     makes "USB or WiFi" a choice the player gets to make without the game
 ##     needing either.
-##   * Detection stays in one place. The bridge runs the same FlickDetector the
-##     dashboard displays, so a flick tuned on the dashboard behaves
-##     identically here, and there is no second implementation to drift.
+##   * Detection stays in one place. Tuning the bridge's FlickDetector tunes
+##     it for every client, and there is no second implementation to drift.
 ##
 ## Nothing here blocks or retries. If the bridge is not running, the game plays
 ## on mouse, touch and keyboard exactly as before -- an absent bridge is a
 ## normal state, not an error.
+##
+## Record and command names are read from Wire (autoload/wire.gd), which
+## mirrors bridge/bbda/protocol.py -- see that file for the wire format itself.
 ##
 ## Command line:
 ##   --imu-port=3334     listen somewhere else (must match the bridge)
@@ -47,7 +49,6 @@ signal motion_updated(game_angle_deg: float, swing_dps: float)
 signal flick_refused(record: Dictionary)
 
 const DEFAULT_PORT := 3334
-const WIRE_VERSION := 1
 
 ## How long without a datagram before the link is treated as down. The bridge
 ## sends a status record every second, so anything past a few seconds means it
@@ -165,7 +166,7 @@ func _open_socket() -> void:
 		return
 	_open = true
 	status_text = "listening on 127.0.0.1:%d" % port
-	print("[imu] ", status_text, " -- start dashboard/game_bridge.py to feed it")
+	print("[imu] ", status_text, " -- start bridge/run_bridge.py to feed it")
 
 
 func _exit_tree() -> void:
@@ -239,10 +240,10 @@ func _handle_datagram(text: String) -> void:
 	var record: Dictionary = parsed
 
 	var version := int(record.get("v", 0))
-	if version != WIRE_VERSION and not _warned_version:
+	if version != Wire.WIRE_VERSION and not _warned_version:
 		_warned_version = true
 		push_warning("[imu] bridge speaks wire version %d, this build expects %d. "
-			% [version, WIRE_VERSION]
+			% [version, Wire.WIRE_VERSION]
 			+ "Records are being read anyway; update whichever side is older.")
 
 	_last_packet_ms = Time.get_ticks_msec()
@@ -251,30 +252,30 @@ func _handle_datagram(text: String) -> void:
 		link_changed.emit(true)
 
 	match String(record.get("type", "")):
-		"flick":
+		Wire.TYPE_FLICK:
 			_handle_flick(record)
-		"motion":
+		Wire.TYPE_MOTION:
 			_handle_motion(record)
-		"refused":
+		Wire.TYPE_REFUSED:
 			_handle_refusal(record)
-		"config":
+		Wire.TYPE_CONFIG:
 			# The bridge reporting what it is actually running. Routed to
 			# ImuSettings rather than kept here: this node is the input path,
 			# and tuning is not part of it.
 			ImuSettings.note_bridge_config(record)
-		"front_suggestion":
+		Wire.TYPE_FRONT_SUGGESTION:
 			ImuSettings.front_suggested.emit(record)
-		"rest":
+		Wire.TYPE_REST:
 			ImuSettings.rest_measured.emit(record)
-		"bias_written":
+		Wire.TYPE_BIAS_WRITTEN:
 			ImuSettings.bias_written.emit(record)
-		"board_cal":
+		Wire.TYPE_BOARD_CAL:
 			board_gyro_bias = record.get("gyro_bias", board_gyro_bias)
-		"hello":
+		Wire.TYPE_HELLO:
 			_handle_hello(record)
-		"status":
+		Wire.TYPE_STATUS:
 			_handle_status(record)
-		"bye":
+		Wire.TYPE_BYE:
 			_handle_bye(record)
 
 
@@ -660,7 +661,7 @@ func _clear_live_motion() -> void:
 ## conversion is a reflection and a rotation at once: 90 - bearing. Straight up
 ## (bearing 0) becomes 90, right (bearing 90) becomes 0, down becomes 270.
 ##
-## dashboard/tests/test_gamebridge.py restates this formula and checks it
+## bridge/tests/test_gamebridge.py restates this formula and checks it
 ## against the game's real lane layout, because a mistake here is invisible --
 ## it does not throw, it just puts every flick in the wrong lane.
 ##

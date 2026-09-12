@@ -30,48 +30,12 @@ would still leave the serial problem unsolved.
 
 Wire format, bridge to game
 ---------------------------
-One JSON object per datagram, UTF-8, no trailing newline required. Every record
-carries ``v`` (this format's version) and ``type``:
-
-    {"v":1,"type":"hello","transport":"serial","target":"COM7","sectors":6}
-    {"v":1,"type":"flick","seq":12,"t":91.42,"host_t":1712.3,"bearing":88.7,
-     "sector":1,"strength":0.61,"peak_dps":464.0,"dominance":0.93,
-     "duration_ms":92.0}
-    {"v":1,"type":"status","connected":true,"rate_hz":198.4,"samples":19840,
-     "flicks":12}
-    {"v":1,"type":"motion","bearing":88.7,"dps":210.4,"swing":198.1,
-     "threshold_dps":150.0}
-    {"v":1,"type":"refused","reason":"swing","bearing":91.2,"peak_dps":388.0,
-     "duration_ms":104.0,"detail":"mostly a roll -- only 0.41 of the turn ..."}
-    {"v":1,"type":"bye"}
-
-``bearing`` is the direction the flick went in degrees clockwise from straight
-up, which is the convention :class:`~bbda.motion.FlickFrame` reports and the
-one a person describing a hand movement uses. The game converts it to its own
-angle convention; see ImuInput.gd. It is sent as a continuous angle rather than
-only as a sector index so that the game's own sector layout -- which a chart
-can override -- stays the thing that decides which lane was hit, instead of
-being quantised twice against a layout this process guessed at.
-
-``motion`` records are the board's *current* rotation rather than a completed
-gesture, sent at :attr:`BridgeConfig.motion_hz` so the game can draw an arrow
-that follows the board in the hand. They exist because a flick record arrives
-only after the flick is over and is refused outright when it was too weak or
-too much of a roll -- so on the evidence of flicks alone, a board that is being
-waved about and a board that is unplugged look identical. ``dps`` is the whole
-rotation rate, ``swing`` the part of it that moved the board's front (the part
-``bearing`` describes), and ``threshold_dps`` the rate a flick starts at, so
-the game can show how close a movement came without knowing how the detector is
-tuned. They are advisory: a game that ignores them plays exactly as before,
-which is what keeps this backwards compatible without a version bump.
-
-``refused`` records say that a movement was seen and deliberately not called a
-flick, and why. Silence is the worst possible answer to "I flicked and nothing
-happened", because it cannot be told apart from a board that is unplugged: both
-look like nothing. These cover both halves of that -- a gesture the detector
-judged and rejected, and one that never reached the threshold for it to judge,
-which the detector cannot report because from inside it nothing occurred.
-Nothing is ever scored from one; ``detail`` is a sentence meant to be shown.
+Defined once, in :mod:`bbda.protocol`, and mirrored field-for-field in
+``game/autoload/wire.gd`` -- see that module's docstring for the full set of
+record types and commands. Every record this bridge sends is built through one
+of its functions; nothing here spells a record's shape as a bare dict literal,
+because a wire format implied by scattered ``record.get(...)`` calls on both
+sides is a wire format that drifts.
 """
 
 from __future__ import annotations
@@ -86,6 +50,7 @@ from typing import Optional
 
 import numpy as np
 
+from . import protocol
 from .link import Link, SerialLink, UdpLink
 from .motion import (
     FLICK_FRONT_CHOICES,
@@ -100,9 +65,9 @@ from .motion import (
 #: obviously related and cannot collide when board and game share a host.
 DEFAULT_GAME_PORT = 3334
 
-#: This is the ``v`` field above. Bump it when a change would confuse an older
-#: ImuInput.gd; the game warns and keeps going rather than failing hard.
-WIRE_VERSION = 1
+#: Re-exported so existing callers of ``bbda.service.WIRE_VERSION`` still work;
+#: :mod:`bbda.protocol` is the one place this is actually defined.
+WIRE_VERSION = protocol.WIRE_VERSION
 
 #: Fraction of the flick threshold a movement has to reach before a bridge
 #: bothers to say it was too weak. Below this it is a hand adjusting its grip,
@@ -440,7 +405,7 @@ class GameBridge:
 
     def _handle_command(self, message: dict) -> None:
         command = str(message.get("cmd", ""))
-        if command == "get":
+        if command == protocol.CMD_GET:
             # Hello as well as config: it carries the transport, and a game
             # that started after the bridge missed the one sent at connect.
             # Without it the panel cannot tell demo mode from a dead board.
@@ -448,15 +413,15 @@ class GameBridge:
                             or (self._link.kind if self._link else "demo"),
                             self._target or "none")
             self.send_config()
-        elif command == "set":
+        elif command == protocol.CMD_SET:
             self.apply_tuning(message)
-        elif command == "learn_front":
+        elif command == protocol.CMD_LEARN_FRONT:
             self._arm_learn(float(message.get("expect_bearing", 0.0)))
-        elif command == "measure_rest":
+        elif command == protocol.CMD_MEASURE_REST:
             self._arm_rest(float(message.get("seconds", 2.0)))
-        elif command == "write_bias":
+        elif command == protocol.CMD_WRITE_BIAS:
             self.write_bias_to_board()
-        elif command == "reset":
+        elif command == protocol.CMD_RESET:
             self.detector.reset()
             self.send_config()
 
@@ -524,8 +489,8 @@ class GameBridge:
 
     def send_config(self) -> None:
         """Tell the panel what is actually running."""
-        self._emit({"type": "config", "control_port": self.config.control_port,
-                    "sectors": self.config.sectors, **self.tuning()})
+        self._emit(protocol.config(control_port=self.config.control_port,
+                                    sectors=self.config.sectors, **self.tuning()))
 
     # ------------------------------------------------------------------
     # Guided measurements
@@ -540,7 +505,7 @@ class GameBridge:
             "up": None,
             "last_t": None,
         }
-        self._emit({"type": "learning", "expect_bearing": expect_bearing % 360.0})
+        self._emit(protocol.learning(expect_bearing % 360.0))
 
     def _watch_learn(self, device_t: float, rate: float, gyro) -> None:
         """Capture one movement, then say which front axis explains it.
@@ -604,16 +569,12 @@ class GameBridge:
         usable = [c for c in candidates if c["swing"] >= 0.5] or candidates
         best = min(usable, key=lambda c: c["error_deg"])
         candidates.sort(key=lambda c: c["error_deg"])
-        self._emit({
-            "type": "front_suggestion",
-            "front": best["front"],
-            "error_deg": best["error_deg"],
-            "swing": best["swing"],
-            "expect_bearing": expect,
-            "peak_dps": round(float(state["peak"]), 1),
-            "current": self.config.front,
-            "candidates": candidates,
-        })
+        self._emit(protocol.front_suggestion(
+            front=best["front"], error_deg=best["error_deg"],
+            swing=best["swing"], expect_bearing=expect,
+            peak_dps=round(float(state["peak"]), 1),
+            current=self.config.front, candidates=candidates,
+        ))
         if self.config.verbose:
             print(f"[learn] flick towards {expect:.0f}deg looks like "
                   f"--front {best['front']} (off by {best['error_deg']:.1f}deg)")
@@ -626,7 +587,7 @@ class GameBridge:
         # finishes on the first one and calls whatever it caught the answer.
         self._rest = {"until": None, "seconds": max(0.05, seconds),
                       "sum": np.zeros(3), "peak": 0.0, "n": 0}
-        self._emit({"type": "measuring", "seconds": seconds})
+        self._emit(protocol.measuring(seconds))
 
     def _watch_rest(self, device_t: float, rate: float, gyro) -> None:
         """Average the gyro while the board is still, to find its bias.
@@ -663,14 +624,11 @@ class GameBridge:
             verdict = "fair"
         else:
             verdict = "poor"
-        self._emit({
-            "type": "rest",
-            "verdict": verdict,
-            "bias": [round(v, 3) for v in self.last_rest_bias],
-            "bias_dps": round(magnitude, 3),
-            "peak_dps": round(float(state["peak"]), 2),
-            "samples": state["n"],
-        })
+        self._emit(protocol.rest(
+            verdict=verdict, bias=[round(v, 3) for v in self.last_rest_bias],
+            bias_dps=round(magnitude, 3), peak_dps=round(float(state["peak"]), 2),
+            samples=state["n"],
+        ))
 
     def write_bias_to_board(self) -> None:
         """Push the measured bias into the board's stored calibration.
@@ -687,12 +645,11 @@ class GameBridge:
         :meth:`_on_info`.
         """
         if self._link is None or not self.connected:
-            self._emit({"type": "bias_written", "ok": False,
-                        "detail": "no board connected"})
+            self._emit(protocol.bias_written(ok=False, detail="no board connected"))
             return
         if self.last_rest_bias == (0.0, 0.0, 0.0):
-            self._emit({"type": "bias_written", "ok": False,
-                        "detail": "measure the rest bias first"})
+            self._emit(protocol.bias_written(ok=False,
+                                              detail="measure the rest bias first"))
             return
         self._bias_write_pending = True
         self._bias_write_deadline = time.monotonic() + 3.0
@@ -710,8 +667,8 @@ class GameBridge:
         # twice.
         self.last_rest_bias = (0.0, 0.0, 0.0)
         detail = ("wrote %+.3f %+.3f %+.3f dps and saved" % total)
-        self._emit({"type": "bias_written", "ok": True, "detail": detail,
-                    "gyro_bias": [round(v, 5) for v in total]})
+        self._emit(protocol.bias_written(ok=True, detail=detail,
+                                          gyro_bias=[round(v, 5) for v in total]))
         if self.config.verbose:
             print(f"[control] {detail}")
 
@@ -726,7 +683,7 @@ class GameBridge:
         if len(stored) != 3:
             return
         self.board_gyro_bias = stored
-        self._emit({"type": "board_cal", "gyro_bias": [round(v, 5) for v in stored]})
+        self._emit(protocol.board_cal(gyro_bias=[round(v, 5) for v in stored]))
         if self._bias_write_pending:
             self._finish_bias_write(stored)
 
@@ -737,8 +694,8 @@ class GameBridge:
         if time.monotonic() < self._bias_write_deadline:
             return
         self._bias_write_pending = False
-        self._emit({"type": "bias_written", "ok": False,
-                    "detail": "the board did not report its calibration"})
+        self._emit(protocol.bias_written(
+            ok=False, detail="the board did not report its calibration"))
 
     def attach(self, link: Link) -> None:
         """Take records from ``link`` from now on."""
@@ -802,7 +759,7 @@ class GameBridge:
         return self._link is not None and self._link.connected
 
     def close(self) -> None:
-        self._emit({"type": "bye"})
+        self._emit(protocol.bye())
         if self._link is not None:
             self._link.disconnect()
             self._link = None
@@ -819,7 +776,7 @@ class GameBridge:
         # told. Never overwritten, so a payload that names its own hand wins.
         if self.config.hand:
             payload = {"hand": self.config.hand, **payload}
-        payload = {"v": WIRE_VERSION, **payload}
+        payload = {"v": protocol.WIRE_VERSION, **payload}
         try:
             self._socket.sendto(
                 json.dumps(payload, separators=(",", ":")).encode("utf-8"),
@@ -835,13 +792,9 @@ class GameBridge:
 
     def send_hello(self, transport: str, target: str) -> None:
         self._transport = transport
-        self._emit({
-            "type": "hello",
-            "transport": transport,
-            "target": target,
-            "sectors": self.config.sectors,
-            "rate_hz": self.config.rate_hz,
-        })
+        self._emit(protocol.hello(transport=transport, target=target,
+                                   sectors=self.config.sectors,
+                                   rate_hz=self.config.rate_hz))
 
     def _note_motion(self, gyro) -> None:
         """Fold one sample into the next motion record.
@@ -902,13 +855,12 @@ class GameBridge:
         if 0.0 <= elapsed < 1.0 / self.config.motion_hz:
             return
         self._last_motion = device_t
-        self._emit({
-            "type": "motion",
-            "bearing": round(self._motion_bearing, 1),
-            "dps": round(self._motion_dps, 1),
-            "swing": round(self._motion_swing, 1),
-            "threshold_dps": self.config.on_threshold_dps,
-        })
+        self._emit(protocol.motion(
+            bearing=round(self._motion_bearing, 1),
+            dps=round(self._motion_dps, 1),
+            swing=round(self._motion_swing, 1),
+            threshold_dps=self.config.on_threshold_dps,
+        ))
         # Start the next window empty rather than decaying this one, so the
         # arrow falls back to rest on its own when the board is put down.
         self._motion_swing = 0.0
@@ -918,13 +870,10 @@ class GameBridge:
         if now - self._last_status < 1.0:
             return
         self._last_status = now
-        self._emit({
-            "type": "status",
-            "connected": True,
-            "rate_hz": round(self.sample_rate, 1),
-            "samples": self.samples,
-            "flicks": self.flicks,
-        })
+        self._emit(protocol.status(
+            connected=True, rate_hz=round(self.sample_rate, 1),
+            samples=self.samples, flicks=self.flicks,
+        ))
 
     # ------------------------------------------------------------------
     # Incoming
@@ -937,7 +886,7 @@ class GameBridge:
         # about a board going away every single time one arrives.
         if not connected and self.link_up:
             self.link_up = False
-            self._emit({"type": "status", "connected": False, "detail": message})
+            self._emit(protocol.status(connected=False, detail=message))
         if self.config.verbose:
             print(f"[link] {message}")
 
@@ -1054,9 +1003,9 @@ class GameBridge:
             self._identical = 0
             if self.stalled:
                 self.stalled = False
-                self._emit({"type": "status", "connected": True,
-                            "stalled": False,
-                            "detail": "the board is measuring again"})
+                self._emit(protocol.status(
+                    connected=True, stalled=False,
+                    detail="the board is measuring again"))
                 if self.config.verbose:
                     print("[link] readings are changing again")
             return
@@ -1069,8 +1018,7 @@ class GameBridge:
                   "the IMU has stopped being read, so no flick can register. "
                   "Unplug the cable and plug it back in; a reset is not enough, "
                   "because it leaves the sensor powered and holding its state.")
-        self._emit({"type": "status", "connected": True, "stalled": True,
-                    "detail": detail})
+        self._emit(protocol.status(connected=True, stalled=True, detail=detail))
         print("[link] FROZEN: " + detail)
 
     #: Samples in a row whose magnitude is nowhere near gravity before the
@@ -1102,9 +1050,9 @@ class GameBridge:
             self._bad_gravity = 0
             if self.gravity_broken:
                 self.gravity_broken = False
-                self._emit({"type": "status", "connected": True,
-                            "gravity_ok": True,
-                            "detail": "the accelerometer reads gravity again"})
+                self._emit(protocol.status(
+                    connected=True, gravity_ok=True,
+                    detail="the accelerometer reads gravity again"))
             return
 
         self._bad_gravity += 1
@@ -1121,8 +1069,7 @@ class GameBridge:
             f"instead. Run `cal ascale 1 1 1` then `cal save` on the board to "
             f"undo it, or redo the six-position step properly."
         )
-        self._emit({"type": "status", "connected": True, "gravity_ok": False,
-                    "detail": detail})
+        self._emit(protocol.status(connected=True, gravity_ok=False, detail=detail))
         print("[cal] BROKEN ACCELEROMETER: " + detail)
 
     def _watch_weak_gesture(self, device_t: float, rate: float, gyro) -> None:
@@ -1176,19 +1123,16 @@ class GameBridge:
         self.refused += 1
         self.last_refusal_text = explain_rejection(
             rejection, self.config.on_threshold_dps)
-        payload = {
-            "type": "refused",
-            "reason": rejection.reason,
-            "peak_dps": round(rejection.peak_dps, 1),
-            "duration_ms": round(rejection.duration_ms, 1),
-            "detail": self.last_refusal_text,
-        }
         # Left out rather than sent as null when there is no frame to measure a
         # direction against: the game tests for the key's presence, and a null
         # would read as a flick towards bearing zero.
-        if rejection.bearing_deg == rejection.bearing_deg:
-            payload["bearing"] = round(rejection.bearing_deg, 2)
-        self._emit(payload)
+        bearing = (round(rejection.bearing_deg, 2)
+                   if rejection.bearing_deg == rejection.bearing_deg else None)
+        self._emit(protocol.refused(
+            reason=rejection.reason, peak_dps=round(rejection.peak_dps, 1),
+            duration_ms=round(rejection.duration_ms, 1),
+            detail=self.last_refusal_text, bearing=bearing,
+        ))
         if self.config.verbose:
             bearing = rejection.bearing_deg
             where = ("        " if bearing != bearing
@@ -1228,28 +1172,27 @@ class GameBridge:
         transport_ms = max(0.0, self.last_transport_ms)
         lag_ms = detect_ms + transport_ms
 
-        self._emit({
-            "type": "flick",
-            "seq": self._seq,
-            "t": round(float(flick.t), 4),
-            "peak_t": round(float(flick.peak_t), 4),
-            "lag_ms": round(lag_ms, 1),
-            "detect_ms": round(detect_ms, 1),
-            "transport_ms": round(transport_ms, 1),
-            "host_t": round(host_now - self._started_at, 4),
-            "bearing": round(float(bearing), 2),
-            "sector": int(flick.sector.index) if flick.sector is not None else -1,
-            "strength": round(self._strength(flick), 3),
-            "peak_dps": round(float(flick.peak_dps), 1),
-            "dominance": round(float(flick.dominance), 3),
-            "duration_ms": round(float(flick.duration_ms), 1),
+        self._emit(protocol.flick(
+            seq=self._seq,
+            t=round(float(flick.t), 4),
+            peak_t=round(float(flick.peak_t), 4),
+            lag_ms=round(lag_ms, 1),
+            detect_ms=round(detect_ms, 1),
+            transport_ms=round(transport_ms, 1),
+            host_t=round(host_now - self._started_at, 4),
+            bearing=round(float(bearing), 2),
+            sector=int(flick.sector.index) if flick.sector is not None else -1,
+            strength=round(self._strength(flick), 3),
+            peak_dps=round(float(flick.peak_dps), 1),
+            dominance=round(float(flick.dominance), 3),
+            duration_ms=round(float(flick.duration_ms), 1),
             # How much of the stroke the direction was averaged over. A flick
             # named off two or three samples is one the sample rate could not
             # resolve, and that is worth being able to see from the game side
             # rather than only from here.
-            "turn_deg": round(float(flick.rotation_deg), 1),
-            "samples": int(flick.samples),
-        })
+            turn_deg=round(float(flick.rotation_deg), 1),
+            samples=int(flick.samples),
+        ))
 
         if self.config.verbose:
             print(
@@ -1279,21 +1222,12 @@ class GameBridge:
         """
         self._seq += 1
         self.flicks += 1
-        self._emit({
-            "type": "flick",
-            "seq": self._seq,
-            "t": round(time.monotonic() - self._started_at, 4),
-            "host_t": round(time.monotonic() - self._started_at, 4),
-            "peak_t": round(time.monotonic() - self._started_at, 4),
-            "lag_ms": 0.0,
-            "bearing": round(float(bearing_deg) % 360.0, 2),
-            "sector": -1,
-            "strength": round(float(strength), 3),
-            "peak_dps": 400.0,
-            "dominance": 1.0,
-            "duration_ms": 90.0,
-            "demo": True,
-        })
+        self._emit(protocol.demo_flick(
+            seq=self._seq, t=round(time.monotonic() - self._started_at, 4),
+            bearing=round(float(bearing_deg) % 360.0, 2),
+            strength=round(float(strength), 3),
+            peak_dps=400.0, dominance=1.0, duration_ms=90.0,
+        ))
 
     def send_demo_motion(self, bearing_deg: float, swing_dps: float) -> None:
         """Post a made-up motion record, to move the arrow with no board.
@@ -1304,14 +1238,11 @@ class GameBridge:
         of what a player sees -- could be broken with every offline check
         still passing.
         """
-        self._emit({
-            "type": "motion",
-            "bearing": round(float(bearing_deg) % 360.0, 1),
-            "dps": round(float(swing_dps), 1),
-            "swing": round(float(swing_dps), 1),
-            "threshold_dps": self.config.on_threshold_dps,
-            "demo": True,
-        })
+        self._emit(protocol.motion(
+            bearing=round(float(bearing_deg) % 360.0, 1),
+            dps=round(float(swing_dps), 1), swing=round(float(swing_dps), 1),
+            threshold_dps=self.config.on_threshold_dps, demo=True,
+        ))
 
 
 # ----------------------------------------------------------------------

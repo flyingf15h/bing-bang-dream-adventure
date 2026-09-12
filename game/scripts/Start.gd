@@ -79,7 +79,7 @@ func _refresh_imu_label() -> void:
 	if not ImuInput.enabled:
 		_imu_label.text = ""
 	elif not ImuInput.link_up:
-		_imu_label.text = "no IMU bridge — run  python dashboard/game_bridge.py"
+		_imu_label.text = "no IMU bridge — run  python bridge/run_bridge.py"
 		_imu_label.modulate = Color(1.0, 0.92, 0.92, 0.85)
 	elif not ImuInput.board_connected:
 		_imu_label.text = "bridge running, no board — " + ImuInput.status_text

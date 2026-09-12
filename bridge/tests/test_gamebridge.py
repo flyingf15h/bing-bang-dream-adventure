@@ -25,7 +25,8 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from bbda.service import WIRE_VERSION, BridgeConfig, GameBridge
+from bbda.protocol import WIRE_VERSION
+from bbda.service import BridgeConfig, GameBridge
 from bbda.link import Sample
 
 fail = 0

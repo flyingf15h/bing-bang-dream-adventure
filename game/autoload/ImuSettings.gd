@@ -156,7 +156,7 @@ var applied: Dictionary = {}
 ## Which tuning values the player has deliberately changed, as a set of keys.
 ##
 ## This is what decides who wins when the two disagree at connect time. A
-## bridge started as `game_bridge.py --front +Y` is making a statement, and so
+## bridge started as `run_bridge.py --front +Y` is making a statement, and so
 ## is somebody who set the front axis in the panel last week; the difference is
 ## that only the second one is recorded here. Untouched settings are left to
 ## the bridge, so its flags mean what they say -- and touched ones are re-sent,
@@ -288,7 +288,7 @@ func push_to_bridge() -> void:
 	## Send every detection setting. Fire and forget: the reply is what counts,
 	## and it arrives on the normal datagram path as a `config` record.
 	var message := tuning()
-	message["cmd"] = "set"
+	message["cmd"] = Wire.CMD_SET
 	_send(message)
 
 
@@ -301,7 +301,7 @@ func push_edited_to_bridge() -> void:
 	if edited.is_empty():
 		request_config()
 		return
-	var message := {"cmd": "set"}
+	var message := {"cmd": Wire.CMD_SET}
 	var all := tuning()
 	for key in edited:
 		if all.has(key):
@@ -322,22 +322,22 @@ func set_tuning(key: String, value: Variant) -> void:
 
 
 func request_config() -> void:
-	_send({"cmd": "get"})
+	_send({"cmd": Wire.CMD_GET})
 
 
 ## Ask the bridge to watch the next flick and say which front axis would put it
 ## where the player says they aimed. `expect_bearing` is degrees clockwise from
 ## up, the convention a person naming a direction uses: 0 up, 90 right.
 func learn_front(expect_bearing: float) -> void:
-	_send({"cmd": "learn_front", "expect_bearing": expect_bearing})
+	_send({"cmd": Wire.CMD_LEARN_FRONT, "expect_bearing": expect_bearing})
 
 
 func measure_rest(seconds: float = 2.0) -> void:
-	_send({"cmd": "measure_rest", "seconds": seconds})
+	_send({"cmd": Wire.CMD_MEASURE_REST, "seconds": seconds})
 
 
 func write_bias() -> void:
-	_send({"cmd": "write_bias"})
+	_send({"cmd": Wire.CMD_WRITE_BIAS})
 
 
 func _send(message: Dictionary) -> void:
