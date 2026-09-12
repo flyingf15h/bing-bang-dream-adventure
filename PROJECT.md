@@ -81,7 +81,7 @@ game/                    Godot 4.7 project
   autoload/
     TapInputBus.gd         input hub; every source reports taps here
     ImuInput.gd            UDP listener for the bridge
-    ImuSettings.gd         tuning, persisted to user://imu_settings.cfg
+    Settings.gd            every setting: IMU tuning, audio, gameplay
   scenes/
     Start.tscn             title screen (main scene)
     MapSelect.tscn         chart picker
@@ -851,9 +851,9 @@ list.
 |---|---|
 | `TapInputBus` | the input hub above |
 | `ImuInput` | UDP listener; emits `flick_received`, `link_changed`, `board_changed`, `motion_updated`, `flick_refused`. Link timeout 3 s — the bridge sends a status record every second. `board_changed` is separate from `link_changed` because the bridge can be running perfectly while the board is unplugged. |
-| `ImuSettings` | tuning, saved to `user://imu_settings.cfg` on change, format version 4 |
+| `Settings` | every setting -- IMU tuning, audio, gameplay -- saved to `user://imu_settings.cfg` on change, format version 5 |
 
-`ImuSettings` holds three kinds of value, which behave differently:
+`Settings` holds several kinds of value, which behave differently:
 
 * **Detection** (front axis, thresholds, swing and margin floors) belong to the
   bridge, because that is where the detector runs. This node remembers them,

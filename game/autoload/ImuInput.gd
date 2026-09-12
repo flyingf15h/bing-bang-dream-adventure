@@ -265,15 +265,15 @@ func _handle_datagram(text: String) -> void:
 			_handle_refusal(record)
 		Wire.TYPE_CONFIG:
 			# The bridge reporting what it is actually running. Routed to
-			# ImuSettings rather than kept here: this node is the input path,
+			# Settings rather than kept here: this node is the input path,
 			# and tuning is not part of it.
-			ImuSettings.note_bridge_config(record)
+			Settings.note_bridge_config(record)
 		Wire.TYPE_FRONT_SUGGESTION:
-			ImuSettings.front_suggested.emit(record)
+			Settings.front_suggested.emit(record)
 		Wire.TYPE_REST:
-			ImuSettings.rest_measured.emit(record)
+			Settings.rest_measured.emit(record)
 		Wire.TYPE_BIAS_WRITTEN:
-			ImuSettings.bias_written.emit(record)
+			Settings.bias_written.emit(record)
 		Wire.TYPE_BOARD_CAL:
 			board_gyro_bias = record.get("gyro_bias", board_gyro_bias)
 		Wire.TYPE_TRANSPORT:
@@ -706,8 +706,8 @@ static func bearing_to_game_angle(bearing_deg: float) -> float:
 ## *after* deciding whether to flip, so undoing it any other way would apply an
 ## offset that was never measured.
 func corrected_bearing(raw_deg: float, hand: String = "") -> float:
-	var bearing: float = -raw_deg if ImuSettings.aim_flip(hand) else raw_deg
-	return fposmod(bearing + ImuSettings.aim_offset(hand), 360.0)
+	var bearing: float = -raw_deg if Settings.aim_flip(hand) else raw_deg
+	return fposmod(bearing + Settings.aim_offset(hand), 360.0)
 
 
 ## A reported bearing turned into the angle the game draws and scores in, with

@@ -1,7 +1,8 @@
 extends Node
-## Stores the IMU tuning, and is the one place that sends it to the bridge.
+## Every setting the game has: IMU tuning, audio, gameplay assist -- and the
+## one place that sends the IMU half of it to the bridge.
 ##
-## Two kinds of setting live here and they behave differently, which is worth
+## Kinds of setting live here and they behave differently, which is worth
 ## being clear about because the difference is the whole design:
 ##
 ##   * **Detection** settings -- the front axis, the thresholds, the swing and
@@ -15,15 +16,21 @@ extends Node
 ##   * **Display** settings -- the arrow, and whether anything but a scoring
 ##     hit gets colour -- are the game's own and take effect immediately.
 ##
-##   * **Assist** settings -- how far off a flick may be aimed, and how much
-##     the timing windows stretch for one -- are also the game's own, because
-##     they are about scoring rather than detection. The bridge decides whether
-##     a movement was a flick and which way it went; only the game knows
-##     whether there was a note there to hit.
+##   * **Assist** settings -- how far off a flick may be aimed, how much the
+##     timing windows stretch for one, and the audio offset -- are also the
+##     game's own, because they are about scoring and feel rather than
+##     detection. The bridge decides whether a movement was a flick and which
+##     way it went; only the game knows whether there was a note there to hit,
+##     or how far the chart's audio lags the speakers it is playing through.
+##
+##   * **Audio** settings -- the three volume sliders -- act on the audio
+##     buses directly (see Step 8); nothing here is sent anywhere.
 ##
 ## Everything is saved to user:// on change, so a board tuned once stays tuned
 ## across runs, and can be exported to a file to move to another machine or to
-## keep alongside a particular board.
+## keep alongside a particular board. A fresh install with no saved file yet
+## imports game/profiles/default.json -- the known-good tuning, committed --
+## so day one plays the same as day one hundred.
 
 ## Emitted when any value changes, from any source: an edit here, a file that
 ## was imported, or the bridge reporting what it is running.
@@ -49,14 +56,15 @@ const SAVE_PATH := "user://imu_settings.cfg"
 ## which lane a flick meant. A file written before that carries floors chosen
 ## against the old, stricter rules.
 ## 3: the leniency values were widened again. See `_migrate()`.
-const FORMAT_VERSION := 4
-
-## The detection floors, and what version first wrote each one's current
-## meaning. A stored value older than this is dropped rather than kept, because
-## it was chosen to compensate for behaviour that no longer exists.
-const FLOOR_KEYS: PackedStringArray = [
-	"on_threshold_dps", "min_swing", "min_margin",
-]
+## 4: the direction check moved from board axes to gravity; a stored aim
+## correction from before that is measuring a mistake that no longer exists.
+## 5: this autoload absorbed audio and gameplay settings that used to live
+## elsewhere or nowhere (`audio_offset_ms`, `vol_master/music/sfx`), and the
+## v1-era dashboard this file's format used to track no longer exists at all.
+## Nothing before this version is migrated field by field any more -- see
+## `_migrate()` -- because there is no longer a meaningful "what this file
+## used to mean" to carry forward across that rewrite.
+const FORMAT_VERSION := 5
 
 const FRONT_CHOICES: PackedStringArray = ["+X", "-X", "+Y", "-Y", "+Z", "-Z"]
 
@@ -145,6 +153,26 @@ var lane_tolerance_deg: float = 75.0
 ## removes. Stretching the windows for flicks and not for keys is what keeps
 ## that from reading as bad play.
 var timing_scale: float = 2.8
+
+## Milliseconds to shift the chart's audio against the notes, positive meaning
+## the audio is delayed. Every audio pipeline from the sound card to whatever
+## the player is listening on adds some lag that the video/note timing does
+## not share, and this is what cancels it out -- there is no way to measure it
+## from in here, so it is a player-set offset, not a detected one. Previously
+## a Gameplay.gd-only @export with nowhere to persist between runs; living
+## here means it survives a restart like every other tuning value.
+var audio_offset_ms: float = -50.0
+
+
+## --- audio, acted on directly through the audio buses -----------------------
+##
+## Linear 0..1, applied as set_bus_volume_db(linear_to_db(v)) with the bus
+## muted outright at 0 -- see Step 8 -- because linear_to_db(0.0) is -inf and
+## some audio drivers handle that worse than an explicit mute.
+var vol_master: float = 1.0
+var vol_music: float = 1.0
+var vol_sfx: float = 1.0
+
 ## Whether the debug panel is open. Stored, because someone tuning a board
 ## across several runs should not have to reopen it every time.
 var panel_open: bool = false
@@ -201,6 +229,16 @@ func assist() -> Dictionary:
 	return {
 		"lane_tolerance_deg": lane_tolerance_deg,
 		"timing_scale": timing_scale,
+		"audio_offset_ms": audio_offset_ms,
+	}
+
+
+## Volume for the three buses. Not sent anywhere -- see `set_audio()`.
+func audio() -> Dictionary:
+	return {
+		"vol_master": vol_master,
+		"vol_music": vol_music,
+		"vol_sfx": vol_sfx,
 	}
 
 
@@ -270,10 +308,28 @@ func set_assist(key: String, value: float) -> void:
 	changed.emit()
 
 
+## The audio counterpart of `set_assist()`: acts immediately, since a volume
+## slider has no bridge to disagree with either.
+func set_audio(key: String, value: float) -> void:
+	if not audio().has(key):
+		push_warning("[imu] set_audio called with unknown key " + key)
+		return
+	set(key, clampf(value, 0.0, 1.0))
+	save_settings()
+	changed.emit()
+
+
 func _read_assist(values: Dictionary) -> void:
 	lane_tolerance_deg = float(values.get("lane_tolerance_deg", lane_tolerance_deg))
 	timing_scale = float(values.get("timing_scale", timing_scale))
+	audio_offset_ms = float(values.get("audio_offset_ms", audio_offset_ms))
 	_clamp_assist()
+
+
+func _read_audio(values: Dictionary) -> void:
+	vol_master = clampf(float(values.get("vol_master", vol_master)), 0.0, 1.0)
+	vol_music = clampf(float(values.get("vol_music", vol_music)), 0.0, 1.0)
+	vol_sfx = clampf(float(values.get("vol_sfx", vol_sfx)), 0.0, 1.0)
 
 
 ## Kept inside the range the sliders offer, wherever a value came from. A file
@@ -282,6 +338,7 @@ func _read_assist(values: Dictionary) -> void:
 func _clamp_assist() -> void:
 	lane_tolerance_deg = clampf(lane_tolerance_deg, 30.0, 100.0)
 	timing_scale = clampf(timing_scale, 1.0, 4.0)
+	audio_offset_ms = clampf(audio_offset_ms, -300.0, 300.0)
 
 
 func push_to_bridge() -> void:
@@ -431,76 +488,41 @@ func load_settings() -> void:
 	var file := ConfigFile.new()
 	if file.load(SAVE_PATH) != OK:
 		_loaded = true
+		# A fresh install has nothing to migrate and nothing to guess at --
+		# import the known-good tuning committed alongside the game, the same
+		# way a player's own exported file would be imported.
+		var error := import_from("res://profiles/default.json")
+		if error != "":
+			push_warning("[imu] could not load the default profile: " + error)
 		return
 	_read_from(file)
-	_migrate(int(file.get_value("imu", "format", 1)))
+	# Before _migrate(), not after: it may call import_from(), which calls
+	# save_settings(), which refuses to write anything while this is false --
+	# a reset that never reaches disk would just repeat itself, silently,
+	# every single launch.
 	_loaded = true
+	_migrate(int(file.get_value("imu", "format", 1)))
 	changed.emit()
 
 
 func _migrate(stored_format: int) -> void:
-	## Put the detection floors and the leniency back to the current defaults,
-	## once, for a file written before they were re-tuned.
-	##
-	## Normally a stored value wins over a default, and it should: it is a
-	## choice somebody made. These are the exception, for two different reasons.
-	##
-	## The floors were chosen against a detector that refused far more than this
-	## one does -- a threshold raised to stop phantom flicks, a margin raised to
-	## stop flicks landing in the wrong lane -- and both of those reasons have
-	## since been dealt with elsewhere, by the game resolving aim itself. A
-	## threshold of 500 dps saved to work around the old behaviour is a hard
-	## flick and nothing else, and keeping it would mean the retune reached
-	## everybody except the people who had already tried to fix this by hand.
-	##
-	## The leniency values were never chosen at all: they are one build old, and
-	## whatever is in the file was written automatically from the defaults of
-	## the build that introduced them. Nothing in the file distinguishes that
-	## from a deliberate setting, so they go back too.
-	##
-	## Nothing else is touched -- front axis, refractory, calibration and the
-	## display settings all survive, because none of them changed meaning.
+	## This is a breaking release: the wire format, the detector's tuning
+	## surface and this file's own schema (Settings absorbing audio and
+	## gameplay settings that used to live elsewhere or nowhere) all changed
+	## underneath it at once, so there is no longer a meaningful field-by-field
+	## story for "what an old value used to mean". A file from before
+	## FORMAT_VERSION is reset to the current defaults outright, the same
+	## defaults `res://profiles/default.json` carries, rather than picked apart
+	## version by version -- and said so, so this does not look like settings
+	## quietly vanishing.
 	if stored_format >= FORMAT_VERSION:
 		return
-	var said: PackedStringArray = []
-	if stored_format < 2:
-		for key in FLOOR_KEYS:
-			edited.erase(key)
-		on_threshold_dps = 110.0
-		min_swing = 0.2
-		min_margin = 0.0
-		said.append("detection floors")
-	if stored_format < 3:
-		lane_tolerance_deg = 75.0
-		timing_scale = 2.8
-		said.append("leniency")
-	if stored_format < 4:
-		## The direction check solves for one rotation, and possibly a mirror,
-		## that best explains where four thrown flicks landed. That fit is only
-		## as meaningful as the thing it was fitted against -- and what it was
-		## fitted against has changed underneath it.
-		##
-		## Directions used to be measured in the board's own axes, so a board
-		## held even slightly crooked reported every flick rotated by the angle
-		## of the grip. The check dutifully measured that and stored it. They are
-		## now measured against gravity, which is where the rotation went in the
-		## first place, so the stored correction is no longer cancelling anything
-		## -- it is the only thing left rotating the flicks.
-		##
-		## Kept would be worse than useless: it would look like a residual
-		## inaccuracy in the new detector, which is exactly the wrong place to go
-		## looking. Zeroed, the check can simply be run again, against a detector
-		## whose answers mean what they say.
-		bearing_offset_deg = 0.0
-		bearing_flip = false
-		hand_aim.clear()
-		edited.erase("bearing_offset_deg")
-		said.append("aim correction")
-	print("[imu] %s reset to the current defaults -- the saved values were "
-		% " and ".join(said)
-		+ "chosen against a stricter build. Everything else in the file is "
-		+ "kept, and the panel still moves all of it.")
-	save_settings()
+	var error := import_from("res://profiles/default.json")
+	print("[imu] settings file was format %d; this build is %d and does not "
+		% [stored_format, FORMAT_VERSION]
+		+ "migrate older files field by field -- reset to the current "
+		+ "defaults instead."
+		+ ("" if error == "" else " (%s)" % error))
 
 
 func save_settings() -> void:
@@ -520,6 +542,8 @@ func save_settings() -> void:
 	file.set_value("aim", "bearing_offset_deg", bearing_offset_deg)
 	file.set_value("aim", "bearing_flip", bearing_flip)
 	file.set_value("aim", "hand_aim", hand_aim)
+	for key in audio():
+		file.set_value("audio", key, audio()[key])
 	file.save(SAVE_PATH)
 
 
@@ -544,10 +568,16 @@ func _read_from(file: ConfigFile) -> void:
 	_read_assist({
 		"lane_tolerance_deg": file.get_value("assist", "lane_tolerance_deg", lane_tolerance_deg),
 		"timing_scale": file.get_value("assist", "timing_scale", timing_scale),
+		"audio_offset_ms": file.get_value("assist", "audio_offset_ms", audio_offset_ms),
 	})
 	bearing_offset_deg = fposmod(float(file.get_value("aim", "bearing_offset_deg", bearing_offset_deg)), 360.0)
 	bearing_flip = bool(file.get_value("aim", "bearing_flip", bearing_flip))
 	hand_aim = file.get_value("aim", "hand_aim", {})
+	_read_audio({
+		"vol_master": file.get_value("audio", "vol_master", vol_master),
+		"vol_music": file.get_value("audio", "vol_music", vol_music),
+		"vol_sfx": file.get_value("audio", "vol_sfx", vol_sfx),
+	})
 
 
 ## Where the saved file really is, for showing a human. user:// is a real
@@ -577,6 +607,7 @@ func export_to(path: String) -> String:
 			"bearing_offset_deg": bearing_offset_deg,
 			"bearing_flip": bearing_flip,
 		},
+		"audio": audio(),
 	}
 	var file := FileAccess.open(path, FileAccess.WRITE)
 	if file == null:
@@ -629,6 +660,7 @@ func import_from(path: String) -> String:
 	var aim: Dictionary = payload.get("aim", {})
 	bearing_offset_deg = fposmod(float(aim.get("bearing_offset_deg", bearing_offset_deg)), 360.0)
 	bearing_flip = bool(aim.get("bearing_flip", bearing_flip))
+	_read_audio(payload.get("audio", {}))
 
 	# Importing a file is as deliberate as moving a slider, so what it carries
 	# counts as chosen and will be re-sent to a bridge that restarts later.
@@ -663,6 +695,7 @@ func reset_to_defaults() -> void:
 	# rather than about how the board plays.
 	lane_tolerance_deg = 75.0
 	timing_scale = 2.8
+	audio_offset_ms = -50.0
 	bearing_offset_deg = 0.0
 	bearing_flip = false
 	edited.clear()

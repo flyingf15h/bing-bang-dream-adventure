@@ -1,0 +1,32 @@
+{
+  "format": 5,
+  "tuning": {
+    "front": "+X",
+    "on_threshold_dps": 110.0,
+    "min_swing": 0.2,
+    "min_margin": 0.0,
+    "refractory_ms": 200.0,
+    "sector_offset_deg": 30.0,
+    "calibrated": true,
+    "commit_fraction": 0.6
+  },
+  "assist": {
+    "lane_tolerance_deg": 75.0,
+    "timing_scale": 2.8,
+    "audio_offset_ms": -50.0
+  },
+  "display": {
+    "show_arrow": true,
+    "colour_only_hits": true,
+    "arrow_flicks_only": false
+  },
+  "aim": {
+    "bearing_offset_deg": 0.0,
+    "bearing_flip": false
+  },
+  "audio": {
+    "vol_master": 1.0,
+    "vol_music": 1.0,
+    "vol_sfx": 1.0
+  }
+}

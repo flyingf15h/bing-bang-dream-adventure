@@ -80,13 +80,13 @@ var _capture_deadline: float = -1.0
 func _ready() -> void:
 	layer = 100
 	_build()
-	_check.button_pressed = ImuSettings.panel_open
-	_panel.visible = ImuSettings.panel_open
+	_check.button_pressed = Settings.panel_open
+	_panel.visible = Settings.panel_open
 
-	ImuSettings.changed.connect(_refresh_controls)
-	ImuSettings.front_suggested.connect(_on_front_suggested)
-	ImuSettings.rest_measured.connect(_on_rest_measured)
-	ImuSettings.bias_written.connect(_on_bias_written)
+	Settings.changed.connect(_refresh_controls)
+	Settings.front_suggested.connect(_on_front_suggested)
+	Settings.rest_measured.connect(_on_rest_measured)
+	Settings.bias_written.connect(_on_bias_written)
 	TapInputBus.tap_judged.connect(func(source: String, hit: bool) -> void:
 		if source != "imu":
 			return
@@ -101,7 +101,7 @@ func _ready() -> void:
 	ImuInput.flick_received.connect(_on_check_flick)
 
 	_refresh_controls()
-	ImuSettings.request_config()
+	Settings.request_config()
 	set_process(true)
 
 
@@ -143,8 +143,8 @@ func _process(delta: float) -> void:
 	if _push_in > 0.0:
 		_push_in -= delta
 		if _push_in <= 0.0:
-			ImuSettings.push_to_bridge()
-			ImuSettings.save_settings()
+			Settings.push_to_bridge()
+			Settings.save_settings()
 	if _panel.visible:
 		_refresh_readouts()
 
@@ -265,7 +265,7 @@ func _build_orientation(column: VBoxContainer) -> void:
 	for choice in FRONTS:
 		_front_picker.add_item(choice)
 	_front_picker.item_selected.connect(func(index: int) -> void:
-		ImuSettings.set_tuning("front", FRONTS[index])
+		Settings.set_tuning("front", FRONTS[index])
 		_queue_push())
 	row.add_child(_front_picker)
 
@@ -282,7 +282,7 @@ func _build_orientation(column: VBoxContainer) -> void:
 		var chosen: Array = LEARN_DIRECTIONS[_learn_picker.selected]
 		_learn_result.text = "waiting for a flick %s..." % chosen[0]
 		_learn_apply.visible = false
-		ImuSettings.learn_front(float(chosen[1])))
+		Settings.learn_front(float(chosen[1])))
 	learn_row.add_child(learn_button)
 
 	_learn_result = Label.new()
@@ -296,7 +296,7 @@ func _build_orientation(column: VBoxContainer) -> void:
 	_learn_apply.pressed.connect(func() -> void:
 		if _suggested_front == "":
 			return
-		ImuSettings.set_tuning("front", _suggested_front)
+		Settings.set_tuning("front", _suggested_front)
 		_learn_apply.visible = false
 		_queue_push()
 		_refresh_controls())
@@ -340,7 +340,7 @@ func _build_direction_check(column: VBoxContainer) -> void:
 	var clear := Button.new()
 	clear.text = "clear correction"
 	clear.pressed.connect(func() -> void:
-		ImuSettings.clear_aim()
+		Settings.clear_aim()
 		_check_result.text = ("correction cleared -- bearings are now used exactly "
 			+ "as the board reports them"))
 	row.add_child(clear)
@@ -359,7 +359,7 @@ func _build_direction_check(column: VBoxContainer) -> void:
 	_check_apply.text = "apply this correction"
 	_check_apply.visible = false
 	_check_apply.pressed.connect(func() -> void:
-		ImuSettings.set_aim(_check_offset, _check_flip, _check_hand)
+		Settings.set_aim(_check_offset, _check_flip, _check_hand)
 		_check_apply.visible = false
 		_check_result.text = ("applied. Run the check again to confirm it now "
 			+ "reads straight."))
@@ -573,13 +573,13 @@ func _build_accuracy(column: VBoxContainer) -> void:
 	measure.text = "measure (2s, hold still)"
 	measure.pressed.connect(func() -> void:
 		_rest_result.text = "measuring -- put the board down..."
-		ImuSettings.measure_rest(2.0))
+		Settings.measure_rest(2.0))
 	row.add_child(measure)
 	var write := Button.new()
 	write.text = "write to board"
 	write.pressed.connect(func() -> void:
 		_bias_result.text = "writing..."
-		ImuSettings.write_bias())
+		Settings.write_bias())
 	row.add_child(write)
 
 	_rest_result = Label.new()
@@ -594,9 +594,9 @@ func _build_accuracy(column: VBoxContainer) -> void:
 
 	var calibrated := CheckBox.new()
 	calibrated.text = "apply the board's stored calibration"
-	calibrated.button_pressed = ImuSettings.calibrated
+	calibrated.button_pressed = Settings.calibrated
 	calibrated.toggled.connect(func(on: bool) -> void:
-		ImuSettings.set_tuning("calibrated", on)
+		Settings.set_tuning("calibrated", on)
 		_queue_push())
 	column.add_child(calibrated)
 	_rows["calibrated_box"] = calibrated
@@ -606,21 +606,21 @@ func _build_display(column: VBoxContainer) -> void:
 	_heading(column, "Display")
 	var arrow := CheckBox.new()
 	arrow.text = "show the arrow  (I)"
-	arrow.button_pressed = ImuSettings.show_arrow
+	arrow.button_pressed = Settings.show_arrow
 	arrow.toggled.connect(func(on: bool) -> void:
-		ImuSettings.show_arrow = on
-		ImuSettings.save_settings()
-		ImuSettings.changed.emit())
+		Settings.show_arrow = on
+		Settings.save_settings()
+		Settings.changed.emit())
 	column.add_child(arrow)
 	_rows["arrow_box"] = arrow
 
 	var only_hits := CheckBox.new()
 	only_hits.text = "colour only registered hits"
-	only_hits.button_pressed = ImuSettings.colour_only_hits
+	only_hits.button_pressed = Settings.colour_only_hits
 	only_hits.toggled.connect(func(on: bool) -> void:
-		ImuSettings.colour_only_hits = on
-		ImuSettings.save_settings()
-		ImuSettings.changed.emit())
+		Settings.colour_only_hits = on
+		Settings.save_settings()
+		Settings.changed.emit())
 	column.add_child(only_hits)
 	_rows["hits_box"] = only_hits
 	_note(column, "With this on, colour means one thing only: that flick hit "
@@ -629,11 +629,11 @@ func _build_display(column: VBoxContainer) -> void:
 
 	var only_arrows := CheckBox.new()
 	only_arrows.text = "draw detected flicks only  (O)"
-	only_arrows.button_pressed = ImuSettings.arrow_flicks_only
+	only_arrows.button_pressed = Settings.arrow_flicks_only
 	only_arrows.toggled.connect(func(on: bool) -> void:
-		ImuSettings.arrow_flicks_only = on
-		ImuSettings.save_settings()
-		ImuSettings.changed.emit())
+		Settings.arrow_flicks_only = on
+		Settings.save_settings()
+		Settings.changed.emit())
 	column.add_child(only_arrows)
 	_rows["only_arrows_box"] = only_arrows
 	_note(column, "A different question from the rule above. That one is about "
@@ -651,8 +651,8 @@ func _build_storage(column: VBoxContainer) -> void:
 	var save := Button.new()
 	save.text = "save"
 	save.pressed.connect(func() -> void:
-		ImuSettings.save_settings()
-		_file_note.text = "saved to " + ImuSettings.save_location())
+		Settings.save_settings()
+		_file_note.text = "saved to " + Settings.save_location())
 	row.add_child(save)
 
 	var export_button := Button.new()
@@ -668,14 +668,14 @@ func _build_storage(column: VBoxContainer) -> void:
 	var defaults := Button.new()
 	defaults.text = "defaults"
 	defaults.pressed.connect(func() -> void:
-		ImuSettings.reset_to_defaults()
+		Settings.reset_to_defaults()
 		_file_note.text = "back to the defaults")
 	row.add_child(defaults)
 
 	_file_note = Label.new()
 	_file_note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	_file_note.add_theme_font_size_override("font_size", 11)
-	_file_note.text = "saved automatically to " + ImuSettings.save_location()
+	_file_note.text = "saved automatically to " + Settings.save_location()
 	column.add_child(_file_note)
 
 
@@ -762,7 +762,7 @@ func _slider(column: VBoxContainer, key: String, caption: String,
 	# which feels broken in a different way. Dragging still works, because the
 	# slider accepts button events and only declines the wheel.
 	slider.mouse_filter = Control.MOUSE_FILTER_PASS
-	slider.value = ImuSettings.get(key)
+	slider.value = Settings.get(key)
 	slider.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	slider.custom_minimum_size = Vector2(150, 0)
 	row.add_child(slider)
@@ -775,10 +775,10 @@ func _slider(column: VBoxContainer, key: String, caption: String,
 
 	slider.value_changed.connect(func(v: float) -> void:
 		if to_bridge:
-			ImuSettings.set_tuning(key, v)
+			Settings.set_tuning(key, v)
 			_queue_push()
 		else:
-			ImuSettings.set_assist(key, v)
+			Settings.set_assist(key, v)
 		value.text = _format_value(key, v))
 	value.text = _format_value(key, slider.value)
 	_sliders[key] = slider
@@ -795,10 +795,10 @@ func _format_value(key: String, value: float) -> String:
 # ----------------------------------------------------------------------
 func _on_toggled(pressed: bool) -> void:
 	_panel.visible = pressed
-	ImuSettings.panel_open = pressed
-	ImuSettings.save_settings()
+	Settings.panel_open = pressed
+	Settings.save_settings()
 	if pressed:
-		ImuSettings.request_config()
+		Settings.request_config()
 
 
 func _queue_push() -> void:
@@ -808,12 +808,12 @@ func _queue_push() -> void:
 func _refresh_controls() -> void:
 	## Put the stored values back into the widgets, without firing their
 	## handlers back at the settings they came from.
-	var index := FRONTS.find(ImuSettings.front)
+	var index := FRONTS.find(Settings.front)
 	if index >= 0 and _front_picker.selected != index:
 		_front_picker.select(index)
 	for key in _sliders:
 		var slider: HSlider = _sliders[key]
-		var value: float = float(ImuSettings.get(key))
+		var value: float = float(Settings.get(key))
 		if not is_equal_approx(slider.value, value):
 			slider.set_value_no_signal(value)
 			# The label is not driven by the signal that was just skipped.
@@ -821,13 +821,13 @@ func _refresh_controls() -> void:
 			var label: Label = row.get_child(row.get_child_count() - 1)
 			label.text = _format_value(key, value)
 	if _rows.has("calibrated_box"):
-		_rows["calibrated_box"].set_pressed_no_signal(ImuSettings.calibrated)
+		_rows["calibrated_box"].set_pressed_no_signal(Settings.calibrated)
 	if _rows.has("arrow_box"):
-		_rows["arrow_box"].set_pressed_no_signal(ImuSettings.show_arrow)
+		_rows["arrow_box"].set_pressed_no_signal(Settings.show_arrow)
 	if _rows.has("hits_box"):
-		_rows["hits_box"].set_pressed_no_signal(ImuSettings.colour_only_hits)
+		_rows["hits_box"].set_pressed_no_signal(Settings.colour_only_hits)
 	if _rows.has("only_arrows_box"):
-		_rows["only_arrows_box"].set_pressed_no_signal(ImuSettings.arrow_flicks_only)
+		_rows["only_arrows_box"].set_pressed_no_signal(Settings.arrow_flicks_only)
 
 
 func _refresh_readouts() -> void:
@@ -992,16 +992,16 @@ func _refresh_aim_readout() -> void:
 		var prefix: String = ""
 		if aim_hand != "":
 			prefix = ("blue " if String(aim_hand) == "left" else "pink ")
-		if not ImuSettings.aim_corrected(aim_hand):
+		if not Settings.aim_corrected(aim_hand):
 			aim_parts.append(prefix + "none")
 		else:
 			var turn: float = rad_to_deg(angle_difference(
-				0.0, deg_to_rad(ImuSettings.aim_offset(aim_hand))))
+				0.0, deg_to_rad(Settings.aim_offset(aim_hand))))
 			aim_parts.append("%s%s%+.0f deg" % [prefix,
-				"mirrored, " if ImuSettings.aim_flip(aim_hand) else "", turn])
+				"mirrored, " if Settings.aim_flip(aim_hand) else "", turn])
 	var any_correction: bool = false
 	for aim_hand in aim_hands:
-		any_correction = any_correction or ImuSettings.aim_corrected(aim_hand)
+		any_correction = any_correction or Settings.aim_corrected(aim_hand)
 	if not any_correction:
 		_set_row("aim", "none -- bearings used as reported", Color(1, 1, 1, 0.5))
 	else:
@@ -1084,14 +1084,14 @@ func _on_bias_written(record: Dictionary) -> void:
 func _on_export_pressed() -> void:
 	_open_dialog(FileDialog.FILE_MODE_SAVE_FILE, "imu_settings.json",
 		func(path: String) -> void:
-			var problem := ImuSettings.export_to(path)
+			var problem := Settings.export_to(path)
 			_file_note.text = problem if problem != "" else "exported to " + path)
 
 
 func _on_import_pressed() -> void:
 	_open_dialog(FileDialog.FILE_MODE_OPEN_FILE, "",
 		func(path: String) -> void:
-			var problem := ImuSettings.import_from(path)
+			var problem := Settings.import_from(path)
 			if problem != "":
 				_file_note.text = problem
 				return
