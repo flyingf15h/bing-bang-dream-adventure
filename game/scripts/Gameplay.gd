@@ -311,13 +311,13 @@ const GRADE_RAMPS := {
 func _grade() -> Array:
 	var pct: float = clampf(score_f / SCORE_POOL, 0.0, 1.0)
 	var key: String = "FAIL"
-	if pct >= 0.98:    key = "SS+"
-	elif pct >= 0.95:  key = "SS"
-	elif pct >= 0.90:  key = "S"
-	elif pct >= 0.80:  key = "A"
-	elif pct >= 0.70:  key = "B"
-	elif pct >= 0.60:  key = "C"
-	elif pct >= 0.50:  key = "D"
+	if pct >= 0.85:    key = "SS+"
+	elif pct >= 0.70:  key = "SS"
+	elif pct >= 0.65:  key = "S"
+	elif pct >= 0.60:  key = "A"
+	elif pct >= 0.50:  key = "B"
+	elif pct >= 0.40:  key = "C"
+	elif pct >= 0.30:  key = "D"
 	var ramp: Array = GRADE_RAMPS[key]
 	return [key, ramp[0], pct, ramp[1]]
 
