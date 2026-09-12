@@ -252,27 +252,30 @@ def scan(ports: list) -> dict:
     return {"type": TYPE_SCAN, "ports": ports}
 
 
-def cal_state(*, hand: str, step: str, progress: float, prompt: str,
+def cal_state(*, step: str, progress: float, prompt: str,
              quality: dict | None = None) -> dict:
     """A calibration sequence's current step, at ~10 Hz while it runs.
 
     ``step`` and ``prompt`` are authored on the bridge, next to the thresholds
     that decide when a step passes -- see ``bbda/calseq.py``. The game only
     ever displays them; it does not decide when a step is done.
+
+    Carries no ``hand`` of its own: :meth:`GameBridge._emit` stamps that on
+    every record this bridge sends, the same as ``flick`` or ``status``, and a
+    second source for the same field is exactly the kind of thing that drifts.
     """
-    return {"type": TYPE_CAL_STATE, "hand": hand, "step": step,
+    return {"type": TYPE_CAL_STATE, "step": step,
             "progress": progress, "prompt": prompt,
             **_present(quality=quality)}
 
 
-def cal_done(*, hand: str, accepted: bool, detail: str,
+def cal_done(*, accepted: bool, detail: str,
              residuals: dict | None = None) -> dict:
     """A calibration sequence finished, accepted or rejected."""
-    return {"type": TYPE_CAL_DONE, "hand": hand, "accepted": accepted,
+    return {"type": TYPE_CAL_DONE, "accepted": accepted,
             "detail": detail, **_present(residuals=residuals)}
 
 
-def transport_changed(*, hand: str, transport: str, target: str) -> dict:
+def transport_changed(*, transport: str, target: str) -> dict:
     """A board is now reached on a different transport, after a live switch."""
-    return {"type": TYPE_TRANSPORT, "hand": hand, "transport": transport,
-            "target": target}
+    return {"type": TYPE_TRANSPORT, "transport": transport, "target": target}

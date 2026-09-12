@@ -21,12 +21,11 @@ That choice is a real one and neither side is obviously better:
 
 Running detection here rather than in GDScript or on the board
 -------------------------------------------------------------
-:class:`~bbda.motion.FlickDetector` already exists, is tuned, and is what the
-dashboard shows on screen. Putting it here means the game and the dashboard
-agree about what a flick is, and that tuning it in one place tunes it for both.
-The alternative -- porting the detector to GDScript -- would duplicate the one
-piece of logic in this project that most needs a single source of truth, and
-would still leave the serial problem unsolved.
+:class:`~bbda.motion.FlickDetector` already exists and is tuned. Putting it
+here means every client speaks to the same detector, so tuning it once tunes
+it everywhere. The alternative -- porting the detector to GDScript -- would
+duplicate the one piece of logic in this project that most needs a single
+source of truth, and would still leave the serial problem unsolved.
 
 Wire format, bridge to game
 ---------------------------
@@ -51,6 +50,7 @@ from typing import Optional
 import numpy as np
 
 from . import protocol
+from .calseq import CalSequence
 from .link import Link, SerialLink, UdpLink
 from .motion import (
     FLICK_FRONT_CHOICES,
@@ -314,6 +314,11 @@ class GameBridge:
         #: Armed by "measure_rest": sums samples to find the gyro's bias and
         #: noise while the board is left alone.
         self._rest: Optional[dict] = None
+        #: The running calibration sequence, or None. While this is set,
+        #: samples go to it instead of the flick detector -- see
+        #: :meth:`_on_sample` -- because a calibration wave is not a flick.
+        self._calseq: Optional[CalSequence] = None
+        self._last_cal_state = 0.0
         #: Last bias measured, kept so it can be written to the board without
         #: measuring twice.
         self.last_rest_bias = (0.0, 0.0, 0.0)
@@ -426,6 +431,67 @@ class GameBridge:
             self.send_config()
         elif command == protocol.CMD_TRANSPORT:
             self._switch_transport(message)
+        elif command == protocol.CMD_CAL_START:
+            self._cal_start(message)
+        elif command == protocol.CMD_CAL_ADVANCE:
+            if self._calseq is not None:
+                self._calseq.advance()
+        elif command == protocol.CMD_CAL_CANCEL:
+            self._cal_cancel()
+        elif command == protocol.CMD_CAL_SAVE:
+            self._cal_save()
+
+    # ------------------------------------------------------------------
+    # Calibration
+    # ------------------------------------------------------------------
+    def _cal_start(self, message: dict) -> None:
+        if self._calseq is not None:
+            return          # a sequence is already running; ignore a retrigger
+        kind = str(message.get("kind", "full"))
+        if kind not in ("full", "quick"):
+            kind = "full"
+        if self._link is not None:
+            # Every step here measures an offset, so it has to see what the
+            # board actually reads -- a reading the board already corrected
+            # would fold the existing calibration into the new one and
+            # quietly double it.
+            self._link.send("csvcal off")
+        self._calseq = CalSequence(label=self.config.hand or "solo")
+        self._calseq.start(kind)
+        self._last_cal_state = 0.0
+        self._emit(self._calseq.state())
+
+    def _cal_cancel(self) -> None:
+        if self._calseq is None:
+            return
+        self._calseq.cancel()
+        self._emit(protocol.cal_done(**self._calseq.result))
+        self._cal_teardown()
+
+    def _cal_save(self) -> None:
+        if self._calseq is None or self._calseq.step != "check":
+            self._emit(protocol.cal_done(
+                accepted=False, detail="calibration is not finished measuring yet"))
+            return
+        if self._link is None or not self.connected:
+            self._emit(protocol.cal_done(accepted=False, detail="no board connected"))
+            return
+        for command in self._calseq.cal.to_device_commands():
+            self._link.send(command)
+        checks = self._calseq.verify
+        passed = sum(1 for c in checks if c["ok"])
+        accepted = passed == len(checks)
+        detail = (f"saved -- all {len(checks)} checks passed" if accepted else
+                  f"saved -- {passed} of {len(checks)} checks passed")
+        residuals = {c["name"]: c["value"] for c in checks}
+        self._emit(protocol.cal_done(accepted=accepted, detail=detail,
+                                      residuals=residuals))
+        self._cal_teardown()
+
+    def _cal_teardown(self) -> None:
+        if self._link is not None:
+            self._link.send("csvcal on" if self.config.calibrated else "csvcal off")
+        self._calseq = None
 
     def _switch_transport(self, message: dict) -> None:
         """Reopen this board's link on a different transport, live.
@@ -448,8 +514,7 @@ class GameBridge:
             return
         if not self.open(link, target):
             return
-        self._emit(protocol.transport_changed(
-            hand=self.config.hand, transport=link.kind, target=target))
+        self._emit(protocol.transport_changed(transport=link.kind, target=target))
 
     #: Tuning the panel is allowed to change, as wire name -> config attribute.
     #: Explicit rather than "any attribute of config", so a typo in a datagram
@@ -910,6 +975,16 @@ class GameBridge:
             wire_ms=round(wire_ms, 1),
         ))
 
+    #: Cadence for cal_state while a calibration is running -- a quality bar
+    #: is what this drives, and 10 Hz is a display rate, not a measurement
+    #: one: the sequence itself sees every sample regardless of how often its
+    #: state is reported.
+    def _maybe_send_cal_state(self, now: float) -> None:
+        if now - self._last_cal_state < 0.1:
+            return
+        self._last_cal_state = now
+        self._emit(self._calseq.state())
+
     # ------------------------------------------------------------------
     # Incoming
     # ------------------------------------------------------------------
@@ -987,6 +1062,21 @@ class GameBridge:
         cutoff = now - 1.0
         while self._rate_window and self._rate_window[0] < cutoff:
             self._rate_window.popleft()
+
+        if self._calseq is not None:
+            # Calibrating: the player is waving the board through fixed poses,
+            # not throwing flicks, and every one of those poses would
+            # otherwise be scored as one. Detection, motion and the guided-
+            # measurement side quests below all assume ordinary play, so none
+            # of them run for as long as this does -- only the sequence
+            # itself sees samples, on the raw feed csvcal off left it on.
+            # Ending the sequence (cal_save, cal_cancel) is handled entirely
+            # in _handle_command, synchronously with the command that asked
+            # for it, so there is nothing left for this path to end itself.
+            self._calseq.feed(sample)
+            self._maybe_send_cal_state(now)
+            self._maybe_send_status(now)
+            return
 
         # The detector is driven by the *device* clock. Host arrival times
         # carry USB and WiFi scheduling jitter, and a duration measured
