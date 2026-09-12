@@ -137,15 +137,20 @@ def hello(transport: str, target: str, sectors: int, rate_hz: int) -> dict:
 def status(connected: bool, *, rate_hz: float | None = None,
            samples: int | None = None, flicks: int | None = None,
            detail: str | None = None, stalled: bool | None = None,
-           gravity_ok: bool | None = None) -> dict:
+           gravity_ok: bool | None = None,
+           wire_ms: float | None = None) -> dict:
     """Link and board health. Shapes vary by what changed; absent means
 
     unchanged from the last one sent -- this is not a full state dump every
-    time, so a field's absence is not itself news.
+    time, so a field's absence is not itself news. ``wire_ms`` is the worst
+    transport delay seen since the last status, i.e. how stale a sample was
+    by the time it got here -- the number that says whether WiFi feels
+    laggy, rather than leaving that a matter of impression.
     """
     return {"type": TYPE_STATUS, "connected": connected,
             **_present(rate_hz=rate_hz, samples=samples, flicks=flicks,
-                       detail=detail, stalled=stalled, gravity_ok=gravity_ok)}
+                       detail=detail, stalled=stalled, gravity_ok=gravity_ok,
+                       wire_ms=wire_ms)}
 
 
 def bye() -> dict:

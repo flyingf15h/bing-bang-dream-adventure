@@ -83,6 +83,11 @@ var board_stalled: bool = false
 var status_text: String = "not started"
 ## Board-side sample rate the bridge last reported, or 0.0.
 var board_rate_hz: float = 0.0
+## Worst transport delay over the last second the bridge reported, in ms --
+## how stale a sample was by the time it arrived. Near 0 on USB always; a
+## number that climbs over a WiFi session rather than holding steady under
+## about 15 ms means samples are queueing, not that the link is merely slow.
+var board_wire_ms: float = 0.0
 ## How the bridge is reaching the board: "serial", "WiFi", or "demo" when
 ## there is no board and the flicks are made up. Anything reporting on the
 ## board's health has to know, or demo mode reads as a broken board.
@@ -271,6 +276,8 @@ func _handle_datagram(text: String) -> void:
 			ImuSettings.bias_written.emit(record)
 		Wire.TYPE_BOARD_CAL:
 			board_gyro_bias = record.get("gyro_bias", board_gyro_bias)
+		Wire.TYPE_TRANSPORT:
+			_handle_transport(record)
 		Wire.TYPE_HELLO:
 			_handle_hello(record)
 		Wire.TYPE_STATUS:
@@ -317,7 +324,7 @@ static func new_hand_state() -> Dictionary:
 		"angle": NAN, "swing": 0.0, "dps": 0.0, "threshold": 0.0,
 		"motion": false, "connected": true, "stalled": false, "quiet": false,
 		"rate_hz": 0.0, "status": "", "refusal": "", "transport": "",
-		"last_seen_ms": 0,
+		"wire_ms": 0.0, "last_seen_ms": 0,
 	}
 
 
@@ -435,6 +442,20 @@ func _handle_hello(record: Dictionary) -> void:
 		board_changed.emit(true)
 
 
+## A board switched transport live, from a `transport` command -- the
+## Controllers tab's USB/WiFi toggle. `hello` already covers a reconnect on
+## whatever transport a board comes back on; this is the same information for
+## a switch that did not go through a reconnect at all.
+func _handle_transport(record: Dictionary) -> void:
+	var hand := _note_hand(record)
+	var state := state_of(hand)
+	state["transport"] = String(record.get("transport", ""))
+	transport = String(state["transport"])
+	status_text = _prefix(hand) + "now on %s via %s" % [
+		record.get("target", "?"), state["transport"]]
+	print("[imu] ", status_text)
+
+
 func _handle_status(record: Dictionary) -> void:
 	var hand := _note_hand(record)
 	var state := state_of(hand)
@@ -454,6 +475,8 @@ func _handle_status(record: Dictionary) -> void:
 				+ String(record.get("detail", "board frozen")))
 	if stalled:
 		state["status"] = String(record.get("detail", "board frozen"))
+	if record.has("wire_ms"):
+		state["wire_ms"] = float(record["wire_ms"])
 	if connected and not stalled:
 		state["rate_hz"] = float(record.get("rate_hz", 0.0))
 		state["status"] = "%.0f Hz from the board" % float(state["rate_hz"])
@@ -477,6 +500,7 @@ func _handle_status(record: Dictionary) -> void:
 
 	board_stalled = _any_stalled()
 	board_rate_hz = float(state["rate_hz"])
+	board_wire_ms = float(state["wire_ms"])
 	status_text = _prefix(hand) + String(state["status"])
 	# The overall flag is "is any board there", because it gates things that
 	# are not per board -- the arrow being drawn at all, the results screen

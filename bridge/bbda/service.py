@@ -424,6 +424,32 @@ class GameBridge:
         elif command == protocol.CMD_RESET:
             self.detector.reset()
             self.send_config()
+        elif command == protocol.CMD_TRANSPORT:
+            self._switch_transport(message)
+
+    def _switch_transport(self, message: dict) -> None:
+        """Reopen this board's link on a different transport, live.
+
+        Requested by the game -- the Controllers tab's USB/WiFi toggle -- so a
+        switch does not need the bridge restarted. ``reconnect_target`` is
+        updated before the switch is attempted rather than after, so that if
+        the new transport is not there yet, the ordinary reconnect loop in
+        ``_serve()`` keeps looking for it on the new one instead of finding
+        its way back to the old.
+        """
+        host = message.get("host") or None
+        port = message.get("port") or None
+        udp_port = int(message.get("udp_port", 3333))
+        self.reconnect_target = (host, udp_port)
+        try:
+            link, target = make_link(port=port, host=host, udp_port=udp_port)
+        except RuntimeError as exc:
+            self._emit(protocol.status(connected=self.connected, detail=str(exc)))
+            return
+        if not self.open(link, target):
+            return
+        self._emit(protocol.transport_changed(
+            hand=self.config.hand, transport=link.kind, target=target))
 
     #: Tuning the panel is allowed to change, as wire name -> config attribute.
     #: Explicit rather than "any attribute of config", so a typo in a datagram
@@ -870,9 +896,18 @@ class GameBridge:
         if now - self._last_status < 1.0:
             return
         self._last_status = now
+        # The worst transport delay seen since the last status, then reset --
+        # so this is "how bad has it been this last second", not a high-water
+        # mark since connect that a single bad packet keeps alive for ever.
+        # Without a number on screen, "does wireless feel laggy" is
+        # unanswerable; with it, a climbing wire_ms over a session is exactly
+        # what a WiFi receive queue building up looks like.
+        wire_ms = self.peak_transport_ms
+        self.peak_transport_ms = 0.0
         self._emit(protocol.status(
             connected=True, rate_hz=round(self.sample_rate, 1),
             samples=self.samples, flicks=self.flicks,
+            wire_ms=round(wire_ms, 1),
         ))
 
     # ------------------------------------------------------------------

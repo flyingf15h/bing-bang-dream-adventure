@@ -1,16 +1,17 @@
 """Feeds the Godot game IMU flicks, over USB serial or over WiFi.
 
-    python run_bridge.py                       # find the board on USB
+    python run_bridge.py                       # find every board on USB
     python run_bridge.py --port COM7           # a particular serial port
     python run_bridge.py --host 192.168.1.50   # over WiFi instead
     python run_bridge.py --list                # what serial ports exist
     python run_bridge.py --demo                # no board: fake flicks
 
-Two boards, one per note colour:
+With no flags at all this finds every board on USB: one plays every note,
+two become the blue and pink hands, in the order the system lists them. Name
+them outright instead when that order is not the one wanted:
 
     python run_bridge.py --board left=COM7 --board right=COM9
     python run_bridge.py --board blue=COM7:+Y --board pink=COM9:-X
-    python run_bridge.py --two-boards          # find both, left is the first
 
 The blue notes are the left hand and the pink ones are the right, which is what
 the charts already call them. A board given a hand may only hit notes of that
@@ -246,12 +247,12 @@ def split_host(target: str) -> tuple[str, int]:
 def plan_boards(args, parser) -> list[tuple[str, str, str | None, str | None, int]]:
     """Work out which boards to open, as (hand, target, front, host, udp_port).
 
-    Three ways in, and they are mutually exclusive because mixing them can only
-    express something one of them already says more clearly:
-    ``--board`` names each board and its colour, ``--two-boards`` finds two and
-    assigns them in the order the system lists them, and the original
-    ``--port`` / ``--host`` / nothing-at-all opens one board that plays
-    everything.
+    ``--board`` names each board and its colour outright. ``--port`` / ``--host``
+    name one board explicitly. With none of those, the default is to look: find
+    every board on USB and assign colours by how many turned up. One board plays
+    everything, exactly as a single-board setup always has; two become the blue
+    and pink hands, in the order the system lists them, which used to need
+    ``--two-boards`` and now needs nothing.
     """
     if args.board:
         planned = []
@@ -272,28 +273,23 @@ def plan_boards(args, parser) -> list[tuple[str, str, str | None, str | None, in
                          "plays the blue notes and one plays the pink")
         return planned
 
-    if args.two_boards:
-        found = find_all_board_ports()
-        if len(found) < 2:
-            parser.error(
-                f"--two-boards needs two boards and found {len(found)}"
-                + (f" ({found[0]})" if found else "")
-                + ". `--list` shows every port; on an ESP32-S3 a port only "
-                  "appears once its sketch is running, so a board that is "
-                  "mid-reset or on a power-only cable will not be there. "
-                  "`--board left=COM7 --board right=COM9` names them outright.")
-        # First listed gets the blue notes. Arbitrary, and said out loud when
-        # the boards are announced, because the alternative is the player
-        # discovering it by having every note score against the wrong colour.
-        return [("left", found[0], None, None, 3333),
-                ("right", found[1], None, None, 3333)]
-
     host, udp_port = (split_host(args.host) if args.host else (None, 3333))
     if host:
         return [("", host, None, host, udp_port)]
     if args.port:
         return [("", args.port, None, None, 3333)]
-    return [("", "", None, None, 3333)]     # empty target: find it
+
+    # Zero-flag default: look for every board on USB before opening anything.
+    found = find_all_board_ports()
+    if len(found) >= 2:
+        # First listed gets the blue notes. Arbitrary, and said out loud when
+        # the boards are announced, because the alternative is the player
+        # discovering it by having every note score against the wrong colour.
+        return [("left", found[0], None, None, 3333),
+                ("right", found[1], None, None, 3333)]
+    if len(found) == 1:
+        return [("", found[0], None, None, 3333)]
+    return [("", "", None, None, 3333)]     # none yet: connect() retries and finds it
 
 
 def connect(bridge: GameBridge, args, target: str, host: str | None,
@@ -369,9 +365,6 @@ def main() -> int:
         help="a board and the note colour it plays, repeatable: "
              "left=COM7 (blue notes), right=COM9 (pink), "
              "blue=192.168.1.5:+Y to pin a front axis or use WiFi")
-    transport.add_argument(
-        "--two-boards", action="store_true",
-        help="find two boards on USB and give the first the blue notes")
     parser.add_argument("--demo", action="store_true",
                         help="send fake flicks without a board, to test the game")
     parser.add_argument("--simulate-flicks", action="store_true",
