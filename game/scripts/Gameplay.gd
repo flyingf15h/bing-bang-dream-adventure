@@ -162,6 +162,7 @@ func _ready() -> void:
 	_load_beatmap()
 
 	player = AudioStreamPlayer.new()
+	player.bus = "Music"
 	add_child(player)
 	# An empty path is a chart that has no music, not a chart whose music is
 	# missing -- the practice map is exactly that. Without the distinction it

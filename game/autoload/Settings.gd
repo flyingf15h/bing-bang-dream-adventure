@@ -204,6 +204,8 @@ var _loaded: bool = false
 
 func _ready() -> void:
 	load_settings()
+	changed.connect(_apply_audio_buses)
+	_apply_audio_buses()
 	# The bridge may already be running, or may start later; either way the
 	# first thing to do on hearing from it is to send it what is stored here,
 	# so a saved tuning survives a bridge restart without anybody re-entering
@@ -211,6 +213,27 @@ func _ready() -> void:
 	ImuInput.link_changed.connect(func(up: bool) -> void:
 		if up:
 			push_edited_to_bridge())
+
+
+## Pushed straight to the audio buses rather than read by whoever plays a
+## sound -- volume is the one setting here with an engine-level home to live
+## in, and going through it means a change takes effect immediately for
+## audio already playing, not just for the next stream that starts.
+func _apply_audio_buses() -> void:
+	_apply_bus_volume("Master", vol_master)
+	_apply_bus_volume("Music", vol_music)
+	_apply_bus_volume("SFX", vol_sfx)
+
+
+func _apply_bus_volume(bus_name: String, linear: float) -> void:
+	var idx := AudioServer.get_bus_index(bus_name)
+	if idx < 0:
+		return
+	AudioServer.set_bus_volume_db(idx, linear_to_db(linear))
+	# linear_to_db(0.0) is -inf, and some audio drivers handle that worse than
+	# an explicit mute -- so zero is muted outright rather than trusted to a
+	# volume low enough that it should not matter.
+	AudioServer.set_bus_mute(idx, linear <= 0.001)
 
 
 ## --- what the bridge is told ----------------------------------------------
