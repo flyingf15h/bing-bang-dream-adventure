@@ -3,18 +3,18 @@ extends RefCounted
 ## Fits one aim correction to a set of thrown flicks: which single rotation,
 ## with or without a mirror, best explains where all of them landed.
 ##
-## Extracted from the old ImuDebugPanel's direction check so the in-game
-## calibration wizard (CalibrationWizard.tscn) and the Advanced settings tab
-## can both drive the same four-flick check without a second copy of the
-## fit -- this is exactly the piece of logic in this project most likely to
-## silently drift if it existed twice, since a rewritten wizard "fixing"
-## unrelated UI text would have no reason to notice a subtly different
-## rotation formula living a few files away.
+## Extracted from the old ImuDebugPanel's direction check as its own static
+## function, callable, so a future second caller never grows a second copy
+## of the fit -- this is exactly the piece of logic in this project most
+## likely to silently drift if it existed twice, since a rewritten caller
+## "fixing" unrelated UI text would have no reason to notice a subtly
+## different rotation formula living a few files away. Takes any number of
+## samples, not specifically four -- CalibrationWizard uses eight.
 
 ## Worst per-flick disagreement, in degrees, still called a consistent
-## answer. An eighth of a turn is roughly what a hand throwing four flicks in
-## a hurry produces; past a quarter they are no longer describing one
-## mapping at all.
+## answer. An eighth of a turn is roughly what a hand throwing a handful of
+## flicks in a hurry produces; past a quarter they are no longer describing
+## one mapping at all.
 const TIGHT_DEG := 20.0
 const LOOSE_DEG := 45.0
 
@@ -86,12 +86,20 @@ static func solve(samples: Array) -> Dictionary:
 
 	var verdict: String = ""
 	var apply_worthy := false
+	# Whether this fit means anything at all -- as distinct from apply_worthy,
+	# which is about whether it is *worth acting on*. A negligible turn is
+	# consistent and not apply_worthy (nothing to fix); a loose spread is
+	# neither -- and a caller that only checked apply_worthy would treat "too
+	# inconsistent to trust" and "already accurate" as the same outcome, which
+	# is exactly the confusion worth a name of its own.
+	var consistent := true
 	if spread > LOOSE_DEG:
-		verdict = ("These four do not agree with each other -- one is %.0f deg "
-			+ "from the best fit -- so no single correction can fix them. That "
-			+ "is almost always the front axis: learn it from a flick, then run "
-			+ "this again. If it persists, throw them harder; a lazy flick has "
-			+ "no clear direction to read.") % spread
+		consistent = false
+		verdict = ("Those flicks do not agree with each other -- one is %.0f "
+			+ "deg from the best fit -- so no single correction can fix them. "
+			+ "That is almost always the front axis: learn it from a flick, "
+			+ "then run this again. If it persists, throw a little harder; a "
+			+ "lazy flick has no clear direction to read.") % spread
 	elif flip:
 		verdict = ("Left and right are mirrored, and the ring is turned %.0f "
 			+ "deg on top of that. A rotation alone cannot undo a mirror, "
@@ -106,10 +114,11 @@ static func solve(samples: Array) -> Dictionary:
 			absf(turn), "anticlockwise" if turn > 0.0 else "clockwise"]
 		apply_worthy = true
 	if spread > TIGHT_DEG and spread <= LOOSE_DEG:
-		verdict += (" The four disagree by up to %.0f deg, so this is a rough "
-			+ "fit -- worth running once more.") % spread
+		verdict += (" They disagree by up to %.0f deg, so this is a rough fit "
+			+ "-- worth running once more.") % spread
 
 	return {
 		"offset": offset, "flip": flip, "spread": spread,
 		"lines": lines, "verdict": verdict, "apply_worthy": apply_worthy,
+		"consistent": consistent,
 	}
