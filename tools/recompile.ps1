@@ -5,7 +5,8 @@
 #
 # If you changed anything under bridge/, use tools/build_windows.ps1 instead
 # so the bridge exe gets rebuilt too.
-$godot = "C:\Users\darsh\Downloads\stuff\Godot_v4.7.1-stable_win64.exe\Godot_v4.7.1-stable_win64_console.exe"
+# $env:GODOT overrides the path, which is how CI points this at its own copy.
+$godot = if ($env:GODOT) { $env:GODOT } else { "C:\Users\darsh\Downloads\stuff\Godot_v4.7.1-stable_win64.exe\Godot_v4.7.1-stable_win64_console.exe" }
 
 New-Item -ItemType Directory -Force build | Out-Null
 & $godot --headless --path game --export-release "Windows Desktop" ..\build\BingBangDreamAdventure.exe

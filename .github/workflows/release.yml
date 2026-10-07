@@ -1,0 +1,117 @@
+# Builds the Windows and Linux packages on their own platforms and attaches
+# both to a GitHub release. Each one is built natively because the bridge is
+# frozen by PyInstaller, which can only produce an executable for the OS it
+# runs on.
+#
+# Push a tag to release it:   git tag v1.0.0 && git push origin v1.0.0
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to build and release (created at HEAD if missing)"
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  GODOT_VERSION: 4.7.1
+  GODOT_URL: https://github.com/godotengine/godot/releases/download/4.7.1-stable
+
+jobs:
+  linux:
+    # The oldest supported runner, so the frozen bridge's glibc floor stays
+    # low enough for the distros people actually play on.
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r bridge/requirements.txt pyinstaller
+
+      - name: Install Godot and the Linux export template
+        run: |
+          mkdir -p "$RUNNER_TEMP/godot" && cd "$RUNNER_TEMP/godot"
+          curl -sSLo godot.zip "$GODOT_URL/Godot_v${GODOT_VERSION}-stable_linux.x86_64.zip"
+          unzip -q godot.zip
+          # Self-contained mode: templates live next to the binary.
+          touch ._sc_
+          dir="editor_data/export_templates/${GODOT_VERSION}.stable"
+          mkdir -p "$dir"
+          curl -sSLo tpl.tpz "$GODOT_URL/Godot_v${GODOT_VERSION}-stable_export_templates.tpz"
+          unzip -qj tpl.tpz templates/version.txt templates/linux_release.x86_64 -d "$dir"
+          rm tpl.tpz godot.zip
+          echo "GODOT=$RUNNER_TEMP/godot/Godot_v${GODOT_VERSION}-stable_linux.x86_64" >> "$GITHUB_ENV"
+
+      - run: tools/build_linux.sh
+
+      - name: Package
+        run: |
+          mv build-linux BingBangDreamAdventure
+          tar -czf BingBangDreamAdventure-linux-x86_64.tar.gz BingBangDreamAdventure
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: BingBangDreamAdventure-linux-x86_64.tar.gz
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r bridge/requirements.txt pyinstaller
+
+      - name: Install Godot and the Windows export templates
+        shell: pwsh
+        run: |
+          $dir = Join-Path $env:RUNNER_TEMP godot
+          New-Item -ItemType Directory -Force $dir | Out-Null
+          Set-Location $dir
+          Invoke-WebRequest "$env:GODOT_URL/Godot_v$env:GODOT_VERSION-stable_win64.exe.zip" -OutFile godot.zip
+          Expand-Archive godot.zip -DestinationPath .
+          New-Item ._sc_ -ItemType File | Out-Null
+          $tpl = "editor_data\export_templates\$env:GODOT_VERSION.stable"
+          New-Item -ItemType Directory -Force $tpl | Out-Null
+          Invoke-WebRequest "$env:GODOT_URL/Godot_v$env:GODOT_VERSION-stable_export_templates.tpz" -OutFile tpl.tpz
+          tar -xf tpl.tpz templates/version.txt templates/windows_release_x86_64.exe templates/windows_release_x86_64_console.exe
+          Move-Item templates\* $tpl
+          Remove-Item tpl.tpz, godot.zip
+          "GODOT=$dir\Godot_v$env:GODOT_VERSION-stable_win64_console.exe" | Out-File -Append $env:GITHUB_ENV
+
+      - name: Build
+        shell: pwsh
+        run: powershell -File tools/build_windows.ps1
+
+      - name: Package
+        shell: pwsh
+        run: |
+          Rename-Item build BingBangDreamAdventure
+          Compress-Archive BingBangDreamAdventure BingBangDreamAdventure-windows-x86_64.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: BingBangDreamAdventure-windows-x86_64.zip
+
+  release:
+    needs: [linux, windows]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+            --title "$TAG" --generate-notes \
+            BingBangDreamAdventure-linux-x86_64.tar.gz \
+            BingBangDreamAdventure-windows-x86_64.zip

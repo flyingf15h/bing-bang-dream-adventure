@@ -1,0 +1,12 @@
+# Lets whoever is logged in at the desktop open the board's serial port without
+# being in the dialout/uucp group, and stops ModemManager probing it with AT
+# commands for the first few seconds after it is plugged in (which both delays
+# the bridge and garbles the board's command stream).
+#
+# Install with tools/linux/install_udev.sh, or by hand:
+#   sudo cp 99-bbda.rules /etc/udev/rules.d/ && sudo udevadm control --reload && sudo udevadm trigger
+#
+# 303a is Espressif's USB vendor ID: an ESP32-S3 running with "USB CDC On Boot"
+# enumerates as itself rather than through a bridge chip.
+SUBSYSTEM=="tty", ATTRS{idVendor}=="303a", MODE="0666", TAG+="uaccess", ENV{ID_MM_DEVICE_IGNORE}="1"
+SUBSYSTEM=="usb", ATTRS{idVendor}=="303a", MODE="0666", TAG+="uaccess", ENV{ID_MM_DEVICE_IGNORE}="1"

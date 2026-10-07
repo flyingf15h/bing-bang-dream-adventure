@@ -5,6 +5,7 @@ game/android/
 
 # Exported builds
 build/
+build-linux/
 *.exe
 *.pck
 *.zip

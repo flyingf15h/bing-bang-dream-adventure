@@ -26,6 +26,7 @@ that the command arrived; the board acknowledges either way.
 
 from __future__ import annotations
 
+import os
 import socket
 import threading
 import time
@@ -272,8 +273,22 @@ class SerialLink(Link):
             port.baudrate = self._baud
             port.timeout = 0.2
             port.write_timeout = 1.0
-            port.dtr = False
-            port.rts = False
+            if os.name == "nt":
+                port.dtr = False
+                port.rts = False
+            else:
+                # Linux raises both lines itself the moment the tty opens, before
+                # pyserial gets a say, and pyserial then applies DTR before RTS --
+                # so asking for both low passes through DTR low / RTS high, which
+                # is exactly the state the USB-Serial-JTAG resets the chip on.
+                # Asking for both high leaves what the kernel set untouched: no
+                # edge at all, and hardware-CDC output does not care about DTR.
+                port.dtr = True
+                port.rts = True
+                # Windows refuses a second open of a COM port; POSIX does not,
+                # and two readers on one tty each get half the bytes. Ask for
+                # the same exclusivity Windows gives for free.
+                port.exclusive = True
             port.open()
             self._port = port
         except (serial.SerialException, OSError, ValueError) as exc:

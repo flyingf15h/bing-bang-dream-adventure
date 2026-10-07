@@ -8,7 +8,8 @@
 # from the terminal and swallows export errors, so a failed export looks
 # like a silent success. The console build blocks until export finishes and
 # actually reports $LASTEXITCODE.
-$godot = "C:\Users\darsh\Downloads\stuff\Godot_v4.7.1-stable_win64.exe\Godot_v4.7.1-stable_win64_console.exe"
+# $env:GODOT overrides the path, which is how CI points this at its own copy.
+$godot = if ($env:GODOT) { $env:GODOT } else { "C:\Users\darsh\Downloads\stuff\Godot_v4.7.1-stable_win64.exe\Godot_v4.7.1-stable_win64_console.exe" }
 
 New-Item -ItemType Directory -Force build | Out-Null
 & $godot --headless --path game --export-release "Windows Desktop" ..\build\BingBangDreamAdventure.exe

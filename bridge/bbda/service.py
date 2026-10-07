@@ -41,7 +41,9 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import socket
+import sys
 import time
 from collections import deque
 from dataclasses import dataclass
@@ -1396,6 +1398,27 @@ def _looks_like_board(port) -> bool:
     return any(k in text for k in ("esp32", "espressif", "usb serial", "cdc"))
 
 
+def _stable_name(device: str) -> str:
+    """The /dev/serial/by-id/ link for ``device`` on Linux, else ``device``.
+
+    Linux numbers ACM ports in the order they appear, and a board that resets
+    while its old ttyACM0 is still held comes back as ttyACM1 -- so a bridge
+    reconnecting to the name it opened last waits for ever on a port that is
+    never coming back. The by-id link is named after the board's own USB
+    serial number and follows it across that renumbering, which is what the
+    COM number already does on Windows.
+    """
+    by_id = "/dev/serial/by-id"
+    if not sys.platform.startswith("linux") or not os.path.isdir(by_id):
+        return device
+    real = os.path.realpath(device)
+    for name in sorted(os.listdir(by_id)):
+        link = os.path.join(by_id, name)
+        if os.path.realpath(link) == real:
+            return link
+    return device
+
+
 def find_board_port() -> Optional[str]:
     """The most likely serial port for the board, or None.
 
@@ -1407,10 +1430,10 @@ def find_board_port() -> Optional[str]:
     ports = list(list_ports.comports())
     for port in ports:
         if port.vid == ESPRESSIF_VID:
-            return port.device
+            return _stable_name(port.device)
     for port in ports:
         if _looks_like_board(port):
-            return port.device
+            return _stable_name(port.device)
     return None
 
 
@@ -1538,8 +1561,9 @@ def find_all_board_ports() -> list[str]:
     from serial.tools import list_ports
 
     ports = list(list_ports.comports())
-    exact = [p.device for p in ports if p.vid == ESPRESSIF_VID]
-    loose = [p.device for p in ports if p.vid != ESPRESSIF_VID and _looks_like_board(p)]
+    exact = [_stable_name(p.device) for p in ports if p.vid == ESPRESSIF_VID]
+    loose = [_stable_name(p.device) for p in ports
+             if p.vid != ESPRESSIF_VID and _looks_like_board(p)]
     return exact + loose
 
 

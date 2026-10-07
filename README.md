@@ -33,7 +33,18 @@ The game never talks to the board directly, because Godot has no way to open a
 serial port. `bridge/run_bridge.py` reads the board over USB or WiFi, decides
 what counts as a flick, and posts each one to the game over localhost.
 
-## Running it
+## Playing a release
+
+Download the zip (Windows) or tar.gz (Linux) from the Releases page, plug in
+the controller(s) and run `BingBangDreamAdventure.exe` /
+`./BingBangDreamAdventure.x86_64`. The bridge is bundled and starts and stops
+with the game.
+
+On Linux, run `sudo ./install_udev.sh` from the release folder once first and
+replug the board: it lets the bridge open the board's serial port without root
+and keeps ModemManager from probing it.
+
+## Running it from source
 
 Flash the firmware once:
 
@@ -41,6 +52,8 @@ Flash the firmware once:
 arduino-cli lib install ICM45605
 arduino-cli compile --fqbn "esp32:esp32:esp32s3:CDCOnBoot=cdc" firmware/bbda_imu
 arduino-cli upload  --fqbn "esp32:esp32:esp32s3:CDCOnBoot=cdc" -p COM14 firmware/bbda_imu
+# Linux: the port is /dev/ttyACM0 (python run_bridge.py --list shows it), and
+# tools/linux/install_udev.sh grants access to it
 ```
 
 Then leave the bridge running next to the game:
@@ -52,6 +65,18 @@ python run_bridge.py                       # finds the board(s) on USB
 python run_bridge.py --host 192.168.1.50   # or over WiFi
 python run_bridge.py --demo                # no board at all, fake flicks
 ```
+
+## Building the releases
+
+```bash
+powershell -File tools/build_windows.ps1   # Windows -> build/
+tools/build_linux.sh                       # Linux   -> build-linux/
+```
+
+Both need Godot 4.7.1 with its export templates (set `GODOT` to its path if
+it is not the default) and `pip install -r bridge/requirements.txt
+pyinstaller`. Pushing a `v*` tag builds both on GitHub Actions and attaches
+them to a release (`.github/workflows/release.yml`).
 
 Calibration is being moved into the bridge as a headless service, driven from
 inside the game rather than from a separate desktop dashboard -- see

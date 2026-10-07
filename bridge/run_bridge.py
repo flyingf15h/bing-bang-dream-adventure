@@ -354,8 +354,43 @@ def _redirect_output_when_frozen() -> None:
     sys.stderr = log_file
 
 
+def _die_with_parent_when_frozen() -> None:
+    """On Linux, exit when the game that launched this does, however it ends.
+
+    The game kills this process on the way out, but only on a way out it gets
+    to run code for. Killed by a signal instead -- a crash, `kill`, a session
+    logging out -- it never does, and this would linger holding the serial
+    port, so the next launch could not open the board. The kernel can deliver
+    a signal here the moment the parent goes, which covers every one of those.
+    Windows has no equivalent short of a job object, and there a closed
+    window is the only way out anyone uses anyway.
+    """
+    if not getattr(sys, "frozen", False) or not sys.platform.startswith("linux"):
+        return
+    import ctypes
+    import os
+    import signal
+
+    PR_SET_PDEATHSIG = 1
+    parent = os.getppid()
+    try:
+        libc = ctypes.CDLL(None, use_errno=True)
+        libc.prctl(PR_SET_PDEATHSIG, signal.SIGTERM, 0, 0, 0)
+    except (OSError, AttributeError):
+        return
+    # SIGTERM as Ctrl-C, so the shutdown path still says goodbye to the game
+    # and closes the port rather than dropping it mid-write.
+    def stop(_signum, _frame):
+        raise KeyboardInterrupt
+
+    signal.signal(signal.SIGTERM, stop)
+    if os.getppid() != parent:
+        sys.exit(0)             # the parent was already gone before we asked
+
+
 def main() -> int:
     _redirect_output_when_frozen()
+    _die_with_parent_when_frozen()
     # Python block-buffers stdout when it is not a terminal, which for this
     # tool defeats the point: the usual way to keep a record of a session is
     # to pipe it to a file or a log window, and a flick log that appears in
@@ -645,4 +680,9 @@ def _serve(bridges: list[GameBridge], args) -> None:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except KeyboardInterrupt:
+        # Stopped between the places that catch it themselves -- while still
+        # looking for a board, say. Nothing is open yet, so nothing to close.
+        sys.exit(0)
