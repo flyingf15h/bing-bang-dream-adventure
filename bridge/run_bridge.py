@@ -40,6 +40,7 @@ import time
 from pathlib import Path
 
 from bbda.service import (
+    BEACON_PORT,
     DEFAULT_GAME_PORT,
     BridgeConfig,
     GameBridge,
@@ -494,11 +495,16 @@ def main() -> int:
         get the flags as given. The front axis and the hand describe this
         particular board, and the control port has to differ or the second
         bridge silently fails to bind and its half of the panel does nothing.
+        It also has to step over BEACON_PORT, which the discovery listener
+        in this same process already holds (3335 + 1 lands right on it).
         """
+        control_port = base_control + index
+        if control_port >= BEACON_PORT > base_control:
+            control_port += 1
         return BridgeConfig(
             game_host=args.game_host,
             game_port=args.game_port,
-            control_port=base_control + index,
+            control_port=control_port,
             rate_hz=args.rate,
             calibrated=not args.raw,
             on_threshold_dps=args.threshold,

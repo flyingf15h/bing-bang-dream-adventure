@@ -39,6 +39,18 @@ from serial.tools import list_ports
 
 from .signals import Emitter, Signal
 
+try:
+    import termios
+except ImportError:         # Windows
+    termios = None
+
+#: What a serial call can raise when the board vanishes under it. pyserial's
+#: POSIX reset_input_buffer() goes straight to termios.tcflush(), whose
+#: termios.error is not an OSError -- so a board resetting just as the port
+#: opens escaped the handler below and killed the whole bridge.
+PORT_ERRORS: tuple = (serial.SerialException, OSError) + (
+    (termios.error,) if termios is not None else ())
+
 DEFAULT_UDP_PORT = 3333
 
 
@@ -300,8 +312,12 @@ class SerialLink(Link):
         time.sleep(0.3)
         try:
             self._port.reset_input_buffer()
-        except (serial.SerialException, OSError) as exc:
+        except PORT_ERRORS as exc:
             self.status.emit(f"Lost {target} right after opening it: {exc}", False)
+            try:
+                self._port.close()
+            except PORT_ERRORS:
+                pass
             self._port = None
             return False
 
@@ -319,12 +335,15 @@ class SerialLink(Link):
         if self._thread is not None:
             self._thread.join(timeout=1.0)
             self._thread = None
-        if self._port is not None:
+        # send() fails over to _fail() and clears self._port if the board is
+        # already gone, so hold our own reference to close.
+        port = self._port
+        if port is not None:
             try:
-                if self._port.is_open:
+                if port.is_open:
                     self.send("mode pretty")
-                    self._port.close()
-            except serial.SerialException:
+                    port.close()
+            except PORT_ERRORS:
                 pass
             self._port = None
         self.status.emit("Disconnected", False)
@@ -342,7 +361,7 @@ class SerialLink(Link):
             with self._write_lock:
                 port.write(payload)
                 port.flush()
-        except (serial.SerialException, OSError) as exc:
+        except PORT_ERRORS as exc:
             self._fail(f"Lost the board while sending: {exc}")
 
     # ------------------------------------------------------------------
@@ -362,7 +381,7 @@ class SerialLink(Link):
         if port is not None:
             try:
                 port.close()
-            except (serial.SerialException, OSError):
+            except PORT_ERRORS:
                 pass
         self.status.emit(message, False)
 
